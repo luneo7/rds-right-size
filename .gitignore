@@ -1,0 +1,8 @@
+.DS_Store
+/.idea
+/.vscode
+/bin
+/release
+/rds-right-size
+/rds_right_size
+/recommendations-*
