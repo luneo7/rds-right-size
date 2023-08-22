@@ -68,6 +68,25 @@ func init() {
 	}
 }
 
+func parseTags() map[string]string {
+	tagsEntries := strings.Split(tags, ",")
+
+	tagsMap := make(map[string]string)
+
+	if len(tagsEntries) > 0 {
+		for _, e := range tagsEntries {
+			if len(strings.TrimSpace(e)) > 0 {
+				parts := strings.Split(e, "=")
+				if len(parts) == 2 {
+					tagsMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				}
+			}
+		}
+	}
+
+	return tagsMap
+}
+
 func main() {
 	var optFns []func(*config.LoadOptions) error
 
@@ -86,22 +105,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	tagsEntries := strings.Split(tags, ",")
-
-	tagsMap := make(map[string]string)
-
-	if len(tagsEntries) > 1 {
-		for _, e := range tagsEntries {
-			if len(strings.TrimSpace(e)) > 0 {
-				parts := strings.Split(e, "=")
-				if len(parts) == 2 {
-					tagsMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-				}
-			}
-		}
-	}
-
-	err = rds.NewRDSRightSize(&instanceTypesUrl, &cfg, period, tagsMap, cpuDownsize, cpuUpsize, memUpsize).DoAnalyzeRDS()
+	err = rds.NewRDSRightSize(&instanceTypesUrl, &cfg, period, parseTags(), cpuDownsize, cpuUpsize, memUpsize).DoAnalyzeRDS()
 
 	if err != nil {
 		log.Fatal(err)

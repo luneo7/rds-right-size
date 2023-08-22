@@ -29,6 +29,14 @@ func (r *RDS) GetInstances() ([]types.Instance, error) {
 		if err == nil {
 			b := make([]types.Instance, len(output.DBInstances))
 			for i, v := range output.DBInstances {
+				tags := types.Tags{}
+
+				for _, v := range v.TagList {
+					if v.Key != nil && v.Value != nil {
+						tags[*v.Key] = *v.Value
+					}
+				}
+
 				b[i] = types.Instance{
 					AvailabilityZone:     v.AvailabilityZone,
 					DBInstanceArn:        v.DBInstanceArn,
@@ -36,6 +44,7 @@ func (r *RDS) GetInstances() ([]types.Instance, error) {
 					DBInstanceClass:      v.DBInstanceClass,
 					Engine:               v.Engine,
 					EngineVersion:        v.EngineVersion,
+					Tags:                 tags,
 				}
 			}
 			dbInstances = append(dbInstances, b...)
@@ -45,27 +54,4 @@ func (r *RDS) GetInstances() ([]types.Instance, error) {
 	}
 
 	return dbInstances, nil
-}
-
-func (r *RDS) GetTags(dbInstanceArn *string) (types.Tags, error) {
-	tags := types.Tags{}
-
-	output, err := r.rdsClient.ListTagsForResource(
-		context.Background(),
-		&awsRds.ListTagsForResourceInput{
-			ResourceName: dbInstanceArn,
-		},
-	)
-
-	if err != nil {
-		return tags, err
-	}
-
-	for _, v := range output.TagList {
-		if v.Key != nil && v.Value != nil {
-			tags[*v.Key] = *v.Value
-		}
-	}
-
-	return tags, nil
 }

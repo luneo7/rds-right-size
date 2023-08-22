@@ -27,7 +27,7 @@ func NewCloudWatch(awsConfig *aws.Config) *CloudWatch {
 
 func (c *CloudWatch) GetMetric(dbInstanceId *string, periodInDays int, metric types.RdsMetricName) (*types.Metric, error) {
 
-	endTime := time.Now().Truncate(time.Hour)
+	endTime := time.Now().UTC().Truncate(time.Hour)
 	startTime := endTime.AddDate(0, 0, (periodInDays)*-1)
 
 	period := int32(periodInDays * 24 * 60 * 60)

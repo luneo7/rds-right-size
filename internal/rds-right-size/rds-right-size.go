@@ -53,10 +53,7 @@ func (r *RDSRightSize) DoAnalyzeRDS() error {
 	}
 
 	for _, instance := range instances {
-		requiredTags, err := r.hasRequiredTags(&instance)
-		if err != nil {
-			return err
-		}
+		requiredTags := r.hasRequiredTags(&instance)
 
 		if *requiredTags {
 			noConnections, err := r.hadNoConnections(&instance)
@@ -138,14 +135,11 @@ func (r *RDSRightSize) findNewInstanceClassWhenDownsizing(currentInstancePropert
 
 	for instanceClass, properties := range r.instanceTypes {
 		if strings.HasPrefix(instanceClass, prefix) {
-			isArm := r.armInstanceRegex.MatchString(instanceClass)
-			if (currantInstanceIsArm && isArm) || (!currantInstanceIsArm && !isArm) {
-				if properties.Vcpu <= currentInstanceProperties.Vcpu {
-					if down == nil || (properties.Vcpu >= chosen.Vcpu && properties.Mem >= chosen.Mem) {
-						newInstanceClass := strings.Clone(instanceClass)
-						down = &newInstanceClass
-						chosen = properties
-					}
+			if properties.Vcpu <= currentInstanceProperties.Vcpu {
+				if down == nil || (properties.Vcpu >= chosen.Vcpu && properties.Mem >= chosen.Mem) {
+					newInstanceClass := strings.Clone(instanceClass)
+					down = &newInstanceClass
+					chosen = properties
 				}
 			}
 		}
@@ -180,27 +174,23 @@ func (r *RDSRightSize) getFilenameWithDate() string {
 	return "recommendations-" + t.Format(layout) + ".json"
 }
 
-func (r *RDSRightSize) hasRequiredTags(instance *rdsTypes.Instance) (*bool, error) {
+func (r *RDSRightSize) hasRequiredTags(instance *rdsTypes.Instance) *bool {
 	returnValue := true
 
 	if len(r.tags) > 0 {
-		currentInstanceTags, err := r.rds.GetTags(instance.DBInstanceArn)
 		tagsFound := 0
 
-		if err != nil {
-			return nil, err
-		}
-
 		for key, value := range r.tags {
-			val, hasValue := currentInstanceTags[key]
+			val, hasValue := instance.Tags[key]
 			if hasValue && value == val {
 				tagsFound++
 			}
 		}
+
 		returnValue = tagsFound == len(r.tags)
 	}
 
-	return &returnValue, nil
+	return &returnValue
 }
 
 func (r *RDSRightSize) hadNoConnections(instance *rdsTypes.Instance) (*bool, error) {

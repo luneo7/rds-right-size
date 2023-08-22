@@ -22,6 +22,8 @@ type Instance struct {
 
 	// The version of the database engine for the automated backup.
 	EngineVersion *string
+
+	Tags Tags
 }
 
 type Tags map[string]string
