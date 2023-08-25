@@ -11,8 +11,14 @@ import (
 )
 
 const (
-	namespace     = "AWS/RDS"
-	dimensionName = "DBInstanceIdentifier"
+	namespace             = "AWS/RDS"
+	dimensionName         = "DBInstanceIdentifier"
+	stat                  = "Average"
+	cpuUtilizationId      = "cpu"
+	databaseConnectionsId = "connections"
+	freeableMemoryId      = "freeablemem"
+	writeThroughputId     = "write"
+	readThroughputId      = "read"
 )
 
 type CloudWatch struct {
@@ -25,47 +31,140 @@ func NewCloudWatch(awsConfig *aws.Config) *CloudWatch {
 	}
 }
 
-func (c *CloudWatch) GetMetric(dbInstanceId *string, periodInDays int, metric types.RdsMetricName) (*types.Metric, error) {
+func (c *CloudWatch) GetMetrics(dbInstanceId *string, periodInDays int) (*types.Metrics, error) {
 
 	endTime := time.Now().UTC().Truncate(time.Hour)
 	startTime := endTime.AddDate(0, 0, (periodInDays)*-1)
 
 	period := int32(periodInDays * 24 * 60 * 60)
 
-	input := &cloudwatch.GetMetricStatisticsInput{
-		Namespace:  aws.String(namespace),
-		MetricName: aws.String(metric.String()),
-		Dimensions: []cwTypes.Dimension{
-			{
-				Name:  aws.String(dimensionName),
-				Value: dbInstanceId,
-			},
-		},
+	input := &cloudwatch.GetMetricDataInput{
 		StartTime: aws.Time(startTime),
 		EndTime:   aws.Time(endTime),
-		Period:    aws.Int32(period),
-		Statistics: []cwTypes.Statistic{
-			cwTypes.StatisticMaximum,
-			cwTypes.StatisticAverage,
-			cwTypes.StatisticMinimum,
+		MetricDataQueries: []cwTypes.MetricDataQuery{
+			{
+				Id: aws.String(databaseConnectionsId),
+				MetricStat: &cwTypes.MetricStat{
+					Metric: &cwTypes.Metric{
+						Namespace:  aws.String(namespace),
+						MetricName: aws.String(types.DatabaseConnections.String()),
+						Dimensions: []cwTypes.Dimension{
+							{
+								Name:  aws.String(dimensionName),
+								Value: dbInstanceId,
+							},
+						},
+					},
+					Period: &period,
+					Stat:   aws.String(stat),
+				},
+			},
+			{
+				Id: aws.String(freeableMemoryId),
+				MetricStat: &cwTypes.MetricStat{
+					Metric: &cwTypes.Metric{
+						Namespace:  aws.String(namespace),
+						MetricName: aws.String(types.FreeableMemory.String()),
+						Dimensions: []cwTypes.Dimension{
+							{
+								Name:  aws.String(dimensionName),
+								Value: dbInstanceId,
+							},
+						},
+					},
+					Period: &period,
+					Stat:   aws.String(stat),
+				},
+			},
+			{
+				Id: aws.String(cpuUtilizationId),
+				MetricStat: &cwTypes.MetricStat{
+					Metric: &cwTypes.Metric{
+						Namespace:  aws.String(namespace),
+						MetricName: aws.String(types.CPUUtilization.String()),
+						Dimensions: []cwTypes.Dimension{
+							{
+								Name:  aws.String(dimensionName),
+								Value: dbInstanceId,
+							},
+						},
+					},
+					Period: &period,
+					Stat:   aws.String(stat),
+				},
+			},
+			{
+				Id: aws.String(writeThroughputId),
+				MetricStat: &cwTypes.MetricStat{
+					Metric: &cwTypes.Metric{
+						Namespace:  aws.String(namespace),
+						MetricName: aws.String(types.WriteThroughput.String()),
+						Dimensions: []cwTypes.Dimension{
+							{
+								Name:  aws.String(dimensionName),
+								Value: dbInstanceId,
+							},
+						},
+					},
+					Period: &period,
+					Stat:   aws.String(stat),
+				},
+			},
+			{
+				Id: aws.String(readThroughputId),
+				MetricStat: &cwTypes.MetricStat{
+					Metric: &cwTypes.Metric{
+						Namespace:  aws.String(namespace),
+						MetricName: aws.String(types.ReadThroughput.String()),
+						Dimensions: []cwTypes.Dimension{
+							{
+								Name:  aws.String(dimensionName),
+								Value: dbInstanceId,
+							},
+						},
+					},
+					Period: &period,
+					Stat:   aws.String(stat),
+				},
+			},
 		},
 	}
 
-	output, err := c.cwClient.GetMetricStatistics(context.TODO(), input)
+	output, err := c.cwClient.GetMetricData(context.Background(), input)
 
 	if err != nil {
 		return nil, err
 	}
 
-	var m types.Metric
-	for _, datapoint := range output.Datapoints {
-		m = types.Metric{
-			DBInstanceIdentifier: dbInstanceId,
-			Maximum:              datapoint.Maximum,
-			Minimum:              datapoint.Minimum,
-			Average:              datapoint.Average,
-			Unit:                 datapoint.Unit,
+	var m types.Metrics
+	metrics := make(map[types.RdsMetricName]types.Metric)
+
+	for _, result := range output.MetricDataResults {
+		var metricName types.RdsMetricName
+
+		switch *result.Id {
+		case databaseConnectionsId:
+			metricName = types.DatabaseConnections
+		case freeableMemoryId:
+			metricName = types.FreeableMemory
+		case cpuUtilizationId:
+			metricName = types.CPUUtilization
+		case writeThroughputId:
+			metricName = types.WriteThroughput
+		case readThroughputId:
+			metricName = types.ReadThroughput
 		}
+
+		for _, value := range result.Values {
+			metrics[metricName] = types.Metric{
+				Value: &value,
+			}
+		}
+	}
+
+	m = types.Metrics{
+		DBInstanceIdentifier: dbInstanceId,
+		InstanceMetrics:      metrics,
 	}
 
 	return &m, nil

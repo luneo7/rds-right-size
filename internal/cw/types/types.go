@@ -1,9 +1,5 @@
 package types
 
-import (
-	cwTypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
-)
-
 type RdsMetricName string
 
 // Enum values for RDS Metrics
@@ -11,26 +7,19 @@ const (
 	CPUUtilization      RdsMetricName = "CPUUtilization"
 	DatabaseConnections RdsMetricName = "DatabaseConnections"
 	FreeableMemory      RdsMetricName = "FreeableMemory"
+	WriteThroughput     RdsMetricName = "WriteThroughput"
+	ReadThroughput      RdsMetricName = "ReadThroughput"
 )
 
 func (c RdsMetricName) String() string {
 	return string(c)
 }
 
-type Metric struct {
-	// The identifier for the source DB instance, which can't be changed and which is
-	// unique to an Amazon Web Services Region.
+type Metrics struct {
 	DBInstanceIdentifier *string
+	InstanceMetrics      map[RdsMetricName]Metric
+}
 
-	// The standard unit for the data point.
-	Unit cwTypes.StandardUnit
-
-	// The maximum metric value.
-	Maximum *float64
-
-	// The minimum metric value.
-	Minimum *float64
-
-	// The average of the metric values.
-	Average *float64
+type Metric struct {
+	Value *float64
 }

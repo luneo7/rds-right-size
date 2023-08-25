@@ -2,8 +2,10 @@ package rds_right_size
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/smithy-go/ptr"
 	"github.com/luneo7/go-rds-right-size/internal/cw"
 	cwTypes "github.com/luneo7/go-rds-right-size/internal/cw/types"
 	"github.com/luneo7/go-rds-right-size/internal/rds"
@@ -17,6 +19,11 @@ import (
 	"regexp"
 	"strings"
 	"time"
+)
+
+const (
+	mbit_bytes  = 131072
+	hours_month = 730
 )
 
 type RDSRightSize struct {
@@ -46,7 +53,7 @@ func NewRDSRightSize(instanceTypesUrl *string, awsConfig *aws.Config, period int
 }
 
 func (r *RDSRightSize) DoAnalyzeRDS() error {
-	var recommendations []types.Recommendation
+	recommendations := make([]types.Recommendation, 0)
 	instances, err := r.rds.GetInstances()
 	if err != nil {
 		return err
@@ -56,7 +63,13 @@ func (r *RDSRightSize) DoAnalyzeRDS() error {
 		requiredTags := r.hasRequiredTags(&instance)
 
 		if *requiredTags {
-			noConnections, err := r.hadNoConnections(&instance)
+			metrics, err := r.getMetrics(&instance)
+
+			if err != nil {
+				return err
+			}
+
+			noConnections, err := r.hadNoConnections(metrics)
 			if err != nil {
 				return err
 			}
@@ -71,45 +84,53 @@ func (r *RDSRightSize) DoAnalyzeRDS() error {
 				instanceProperties, mappedInstance := r.instanceTypes[*instance.DBInstanceClass]
 
 				if mappedInstance {
-					memoryUtilization, err := r.getMemoryUtilization(&instance, &instanceProperties)
+					memoryUtilization, err := r.getMemoryUtilization(metrics, &instanceProperties)
 					if err != nil {
 						return err
 					}
 
-					if *memoryUtilization.UnderProvisioned {
+					if *memoryUtilization.UnderProvisioned && instanceProperties.Up != nil {
+						upInstance := r.instanceTypes[*instanceProperties.Up]
 						recommendations = append(recommendations, types.Recommendation{
-							Instance:                instance,
-							Recommendation:          types.UpScale,
-							Reason:                  types.MemoryUnderProvisionedReason,
-							RecommendedInstanceType: instanceProperties.Up,
-							MetricValue:             memoryUtilization.Value,
+							Instance:                    instance,
+							Recommendation:              types.UpScale,
+							Reason:                      types.MemoryUnderProvisionedReason,
+							RecommendedInstanceType:     instanceProperties.Up,
+							MetricValue:                 memoryUtilization.Value,
+							MonthlyApproximatePriceDiff: Float64((upInstance.StdPrice - instanceProperties.StdPrice) * hours_month),
 						})
 					} else {
-						cpuUtilization, err := r.getCPUUtilization(&instance)
+						cpuUtilization, err := r.getCPUUtilization(metrics)
 						if err != nil {
 							return err
 						}
 
-						if cpuUtilization.Status == types.CPUUnderProvisioned {
+						bandwidthUtilization, err := r.getBandwidthUtilization(metrics, &instanceProperties)
+
+						if err != nil {
+							return err
+						}
+
+						if cpuUtilization.Status == types.CPUUnderProvisioned && instanceProperties.Up != nil {
+							upInstance := r.instanceTypes[*instanceProperties.Up]
 							recommendations = append(recommendations, types.Recommendation{
-								Instance:                instance,
-								Recommendation:          types.UpScale,
-								Reason:                  types.CPUUnderProvisionedReason,
-								RecommendedInstanceType: instanceProperties.Up,
-								MetricValue:             cpuUtilization.Value,
+								Instance:                    instance,
+								Recommendation:              types.UpScale,
+								Reason:                      types.CPUUnderProvisionedReason,
+								RecommendedInstanceType:     instanceProperties.Up,
+								MetricValue:                 cpuUtilization.Value,
+								MonthlyApproximatePriceDiff: Float64((upInstance.StdPrice - instanceProperties.StdPrice) * hours_month),
 							})
-						} else if cpuUtilization.Status == types.CPUOverProvisioned {
-							down := instanceProperties.Down
-							if down == nil {
-								down = r.findNewInstanceClassWhenDownsizing(&instanceProperties, &instance)
-							}
-							if down != nil {
+						} else if cpuUtilization.Status == types.CPUOverProvisioned && bandwidthUtilization.Status != types.BandwidthUnderProvisioned && instanceProperties.Down != nil {
+							downInstance := r.instanceTypes[*instanceProperties.Down]
+							if downInstance.MaxBandwidth != nil && *bandwidthUtilization.Total < float64(*downInstance.MaxBandwidth*mbit_bytes) {
 								recommendations = append(recommendations, types.Recommendation{
-									Instance:                instance,
-									Recommendation:          types.DownScale,
-									Reason:                  types.CPUOverProvisionedReason,
-									RecommendedInstanceType: down,
-									MetricValue:             cpuUtilization.Value,
+									Instance:                    instance,
+									Recommendation:              types.DownScale,
+									Reason:                      types.CPUOverProvisionedReason,
+									RecommendedInstanceType:     instanceProperties.Down,
+									MetricValue:                 cpuUtilization.Value,
+									MonthlyApproximatePriceDiff: Float64((downInstance.StdPrice - instanceProperties.StdPrice) * hours_month),
 								})
 							}
 						}
@@ -119,10 +140,38 @@ func (r *RDSRightSize) DoAnalyzeRDS() error {
 		}
 	}
 
+	r.writeApproximateCostDifference(recommendations)
+
 	return r.writeRecommendations(recommendations)
 }
 
+func Float64(v float64) *float64 {
+	return ptr.Float64(v)
+}
+
+func (r *RDSRightSize) writeApproximateCostDifference(recommendations []types.Recommendation) {
+	var priceDiff float64 = 0
+	for _, recommendation := range recommendations {
+		if recommendation.MonthlyApproximatePriceDiff != nil {
+			priceDiff = priceDiff + *recommendation.MonthlyApproximatePriceDiff
+		}
+	}
+
+	if priceDiff != 0 {
+		if priceDiff > 0 {
+			fmt.Println(fmt.Sprintf("The changes will yield a price increase of approximately $%.2f per month", priceDiff))
+		} else {
+			fmt.Println(fmt.Sprintf("The changes will yield a savings of approximately $%.2f per month", priceDiff*-1))
+		}
+	}
+
+}
+
 func (r *RDSRightSize) findNewInstanceClassWhenDownsizing(currentInstanceProperties *types.InstanceProperties, currentInstance *rdsTypes.Instance) *string {
+	if strings.HasPrefix(*currentInstance.DBInstanceClass, "db.t") {
+		return nil
+	}
+
 	var down *string
 	var chosen types.InstanceProperties
 	prefix := "db.t3"
@@ -193,20 +242,16 @@ func (r *RDSRightSize) hasRequiredTags(instance *rdsTypes.Instance) *bool {
 	return &returnValue
 }
 
-func (r *RDSRightSize) hadNoConnections(instance *rdsTypes.Instance) (*bool, error) {
+func (r *RDSRightSize) hadNoConnections(metrics *cwTypes.Metrics) (*bool, error) {
 	var returnValue bool
 
-	dbConnections, err := r.cloudWatch.GetMetric(
-		instance.DBInstanceIdentifier,
-		r.period,
-		cwTypes.DatabaseConnections,
-	)
+	metric, ok := metrics.InstanceMetrics[cwTypes.DatabaseConnections]
 
-	if err != nil {
-		return nil, err
+	if !ok {
+		return nil, errors.New("no database connections metric found")
 	}
 
-	if dbConnections.Average == nil || *dbConnections.Average == 0 {
+	if metric.Value == nil || *metric.Value == 0 {
 		returnValue = true
 	} else {
 		returnValue = false
@@ -215,21 +260,17 @@ func (r *RDSRightSize) hadNoConnections(instance *rdsTypes.Instance) (*bool, err
 	return &returnValue, nil
 }
 
-func (r *RDSRightSize) getMemoryUtilization(instance *rdsTypes.Instance, instanceProperties *types.InstanceProperties) (*types.MemoryUtilization, error) {
+func (r *RDSRightSize) getMemoryUtilization(metrics *cwTypes.Metrics, instanceProperties *types.InstanceProperties) (*types.MemoryUtilization, error) {
 	var returnValue types.MemoryUtilization
 	var underProvisioned bool
 
-	freeableMemory, err := r.cloudWatch.GetMetric(
-		instance.DBInstanceIdentifier,
-		r.period,
-		cwTypes.FreeableMemory,
-	)
+	metric, ok := metrics.InstanceMetrics[cwTypes.FreeableMemory]
 
-	if err != nil {
-		return nil, err
+	if !ok {
+		return nil, errors.New("no freeable memory metric found")
 	}
 
-	metricValue := *freeableMemory.Average / float64((*instanceProperties).Mem)
+	metricValue := (*metric.Value / (1 << 30)) * 100.0 / float64((*instanceProperties).Mem)
 
 	if metricValue < r.memUpsizeThreshold {
 		underProvisioned = true
@@ -242,40 +283,89 @@ func (r *RDSRightSize) getMemoryUtilization(instance *rdsTypes.Instance, instanc
 		UnderProvisioned: &underProvisioned,
 	}
 
-	return &returnValue, err
+	return &returnValue, nil
 }
 
-func (r *RDSRightSize) getCPUUtilization(instance *rdsTypes.Instance) (*types.CPUUtilization, error) {
-	var returnValue types.CPUUtilization
+func (r *RDSRightSize) getMetrics(instance *rdsTypes.Instance) (*cwTypes.Metrics, error) {
+	return r.cloudWatch.GetMetrics(instance.DBInstanceIdentifier, r.period)
+}
 
-	cpuUtilization, err := r.cloudWatch.GetMetric(
-		instance.DBInstanceIdentifier,
-		r.period,
-		cwTypes.CPUUtilization,
-	)
+func (r *RDSRightSize) getBandwidthUtilization(metrics *cwTypes.Metrics, instanceProperties *types.InstanceProperties) (*types.BandwidthUtilization, error) {
+	var returnValue types.BandwidthUtilization
 
-	if err != nil {
-		return nil, err
+	readMetric, ok := metrics.InstanceMetrics[cwTypes.ReadThroughput]
+
+	if !ok {
+		return nil, errors.New("no read throughput metric found")
 	}
 
-	if *cpuUtilization.Average > r.cpuUpsizeThreshold {
+	writeMetric, ok := metrics.InstanceMetrics[cwTypes.WriteThroughput]
+
+	if !ok {
+		return nil, errors.New("no write throughput metric found")
+	}
+
+	total := *readMetric.Value + *writeMetric.Value
+
+	if instanceProperties.MaxBandwidth != nil {
+		metricValue := total / float64(*instanceProperties.MaxBandwidth*mbit_bytes) * 100.0
+
+		if metricValue > r.cpuUpsizeThreshold {
+			returnValue = types.BandwidthUtilization{
+				Value:  &metricValue,
+				Total:  &total,
+				Status: types.BandwidthUnderProvisioned,
+			}
+		} else if metricValue >= r.cpuDownsizeThreshold {
+			returnValue = types.BandwidthUtilization{
+				Value:  &metricValue,
+				Total:  &total,
+				Status: types.BandwidthOptimized,
+			}
+		} else {
+			returnValue = types.BandwidthUtilization{
+				Value:  &metricValue,
+				Total:  &total,
+				Status: types.BandwidthOverProvisioned,
+			}
+		}
+	} else {
+		returnValue = types.BandwidthUtilization{
+			Total:  &total,
+			Status: types.BandwidthOptimized,
+		}
+	}
+
+	return &returnValue, nil
+}
+
+func (r *RDSRightSize) getCPUUtilization(metrics *cwTypes.Metrics) (*types.CPUUtilization, error) {
+	var returnValue types.CPUUtilization
+
+	metric, ok := metrics.InstanceMetrics[cwTypes.CPUUtilization]
+
+	if !ok {
+		return nil, errors.New("no cpu utilization metric found")
+	}
+
+	if *metric.Value > r.cpuUpsizeThreshold {
 		returnValue = types.CPUUtilization{
-			Value:  cpuUtilization.Average,
+			Value:  metric.Value,
 			Status: types.CPUUnderProvisioned,
 		}
-	} else if *cpuUtilization.Average >= r.cpuDownsizeThreshold {
+	} else if *metric.Value >= r.cpuDownsizeThreshold {
 		returnValue = types.CPUUtilization{
-			Value:  cpuUtilization.Average,
+			Value:  metric.Value,
 			Status: types.CPUOptimized,
 		}
 	} else {
 		returnValue = types.CPUUtilization{
-			Value:  cpuUtilization.Average,
+			Value:  metric.Value,
 			Status: types.CPUOverProvisioned,
 		}
 	}
 
-	return &returnValue, err
+	return &returnValue, nil
 }
 
 func loadInstanceTypes(instanceTypesUrl *string) types.InstanceTypes {

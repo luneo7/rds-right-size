@@ -33,13 +33,13 @@ func init() {
 		periodUsage               = "Lookback period in days, default of 30 days"
 		regionDefaultValue        = ""
 		regionUsage               = "AWS Region to analyze"
-		cpuUpsizeDefaultValue     = 75
+		cpuUpsizeDefaultValue     = 60
 		cpuUpsizeUsage            = "Average used CPU % - Upsize threshold"
-		cpuDownsizeDefaultVale    = 45
+		cpuDownsizeDefaultVale    = 30
 		cpuDownsizeUsage          = "Average used CPU % - Downsize Threshold"
-		memUpsizeDefaultVale      = 10
+		memUpsizeDefaultVale      = 5
 		memUpsizeUsage            = "Freeable Memory % of Instance Memory - Upsize threshold"
-		instanceTypesDefaultValue = "https://gist.githubusercontent.com/luneo7/ff148e252dccb8bf14f3c9703c695cff/raw/231b9fd9ea34f8dd15aeb61ff8943690d06acccb/rds_instance_types.json"
+		instanceTypesDefaultValue = "https://gist.githubusercontent.com/luneo7/fbea6db54a7bf114ba9310c3e649983b/raw/9cd77a5a9329749b5fbc502ed24dc23a6a70e103/aurora_instance_types.json"
 		instanceTypeUsage         = "Instance types JSON URL"
 	)
 
