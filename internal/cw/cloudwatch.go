@@ -13,7 +13,6 @@ import (
 const (
 	namespace             = "AWS/RDS"
 	dimensionName         = "DBInstanceIdentifier"
-	stat                  = "Average"
 	cpuUtilizationId      = "cpu"
 	databaseConnectionsId = "connections"
 	freeableMemoryId      = "freeablemem"
@@ -31,7 +30,7 @@ func NewCloudWatch(awsConfig *aws.Config) *CloudWatch {
 	}
 }
 
-func (c *CloudWatch) GetMetrics(dbInstanceId *string, periodInDays int) (*types.Metrics, error) {
+func (c *CloudWatch) GetMetrics(dbInstanceId *string, periodInDays int, statistic types.StatName) (*types.Metrics, error) {
 
 	endTime := time.Now().UTC().Truncate(time.Hour)
 	startTime := endTime.AddDate(0, 0, (periodInDays)*-1)
@@ -56,7 +55,7 @@ func (c *CloudWatch) GetMetrics(dbInstanceId *string, periodInDays int) (*types.
 						},
 					},
 					Period: &period,
-					Stat:   aws.String(stat),
+					Stat:   aws.String(types.Average.String()),
 				},
 			},
 			{
@@ -73,7 +72,7 @@ func (c *CloudWatch) GetMetrics(dbInstanceId *string, periodInDays int) (*types.
 						},
 					},
 					Period: &period,
-					Stat:   aws.String(stat),
+					Stat:   aws.String(statistic.String()),
 				},
 			},
 			{
@@ -90,7 +89,7 @@ func (c *CloudWatch) GetMetrics(dbInstanceId *string, periodInDays int) (*types.
 						},
 					},
 					Period: &period,
-					Stat:   aws.String(stat),
+					Stat:   aws.String(statistic.String()),
 				},
 			},
 			{
@@ -107,7 +106,7 @@ func (c *CloudWatch) GetMetrics(dbInstanceId *string, periodInDays int) (*types.
 						},
 					},
 					Period: &period,
-					Stat:   aws.String(stat),
+					Stat:   aws.String(statistic.String()),
 				},
 			},
 			{
@@ -124,7 +123,7 @@ func (c *CloudWatch) GetMetrics(dbInstanceId *string, periodInDays int) (*types.
 						},
 					},
 					Period: &period,
-					Stat:   aws.String(stat),
+					Stat:   aws.String(statistic.String()),
 				},
 			},
 		},

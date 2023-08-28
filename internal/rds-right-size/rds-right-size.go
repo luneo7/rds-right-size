@@ -36,9 +36,10 @@ type RDSRightSize struct {
 	cpuDownsizeThreshold float64
 	cpuUpsizeThreshold   float64
 	memUpsizeThreshold   float64
+	statistic            cwTypes.StatName
 }
 
-func NewRDSRightSize(instanceTypesUrl *string, awsConfig *aws.Config, period int, tags rdsTypes.Tags, cpuDownsizeThreshold float64, cpuUpsizeThreshold float64, memUpsizeThreshold float64) *RDSRightSize {
+func NewRDSRightSize(instanceTypesUrl *string, awsConfig *aws.Config, period int, tags rdsTypes.Tags, cpuDownsizeThreshold float64, cpuUpsizeThreshold float64, memUpsizeThreshold float64, statistic cwTypes.StatName) *RDSRightSize {
 	return &RDSRightSize{
 		rds:                  rds.NewRDS(awsConfig),
 		cloudWatch:           cw.NewCloudWatch(awsConfig),
@@ -49,6 +50,7 @@ func NewRDSRightSize(instanceTypesUrl *string, awsConfig *aws.Config, period int
 		cpuDownsizeThreshold: cpuDownsizeThreshold,
 		cpuUpsizeThreshold:   cpuUpsizeThreshold,
 		memUpsizeThreshold:   memUpsizeThreshold,
+		statistic:            statistic,
 	}
 }
 
@@ -287,7 +289,7 @@ func (r *RDSRightSize) getMemoryUtilization(metrics *cwTypes.Metrics, instancePr
 }
 
 func (r *RDSRightSize) getMetrics(instance *rdsTypes.Instance) (*cwTypes.Metrics, error) {
-	return r.cloudWatch.GetMetrics(instance.DBInstanceIdentifier, r.period)
+	return r.cloudWatch.GetMetrics(instance.DBInstanceIdentifier, r.period, r.statistic)
 }
 
 func (r *RDSRightSize) getBandwidthUtilization(metrics *cwTypes.Metrics, instanceProperties *types.InstanceProperties) (*types.BandwidthUtilization, error) {

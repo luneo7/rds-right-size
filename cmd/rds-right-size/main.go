@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/luneo7/go-rds-right-size/internal/cw/types"
 	"log"
 	"os"
 	"strings"
@@ -17,6 +18,7 @@ var (
 	region           string
 	tags             string
 	instanceTypesUrl string
+	statName         string
 	period           int
 	cpuUpsize        float64
 	cpuDownsize      float64
@@ -30,10 +32,10 @@ func init() {
 		tagsDefaultValue          = ""
 		tagsUsage                 = "Comma separated key/value tags map to filter instances"
 		periodDefaultValue        = 30
-		periodUsage               = "Lookback period in days, default of 30 days"
+		periodUsage               = "Lookback period in days"
 		regionDefaultValue        = ""
 		regionUsage               = "AWS Region to analyze"
-		cpuUpsizeDefaultValue     = 60
+		cpuUpsizeDefaultValue     = 75
 		cpuUpsizeUsage            = "Average used CPU % - Upsize threshold"
 		cpuDownsizeDefaultVale    = 30
 		cpuDownsizeUsage          = "Average used CPU % - Downsize Threshold"
@@ -41,6 +43,8 @@ func init() {
 		memUpsizeUsage            = "Freeable Memory % of Instance Memory - Upsize threshold"
 		instanceTypesDefaultValue = "https://gist.githubusercontent.com/luneo7/fbea6db54a7bf114ba9310c3e649983b/raw/9cd77a5a9329749b5fbc502ed24dc23a6a70e103/aurora_instance_types.json"
 		instanceTypeUsage         = "Instance types JSON URL"
+		statNameDefaultVale       = "p99"
+		statNameUsage             = "Statistic to be used to determine down/upsizing (ex.: Average, p99, p95, p50)"
 	)
 
 	flag.StringVar(&profile, "profile", profileDefaultValue, profileUsage)
@@ -59,6 +63,8 @@ func init() {
 	flag.StringVar(&region, "r", regionDefaultValue, regionUsage+" (shorthand)")
 	flag.StringVar(&instanceTypesUrl, "instance-types", instanceTypesDefaultValue, instanceTypeUsage)
 	flag.StringVar(&instanceTypesUrl, "i", instanceTypesDefaultValue, instanceTypeUsage+" (shorthand)")
+	flag.StringVar(&statName, "stat", statNameDefaultVale, statNameUsage)
+	flag.StringVar(&statName, "s", statNameDefaultVale, statNameUsage+" (shorthand)")
 
 	flag.Parse()
 	if flag.NArg() > 0 {
@@ -105,7 +111,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	err = rds.NewRDSRightSize(&instanceTypesUrl, &cfg, period, parseTags(), cpuDownsize, cpuUpsize, memUpsize).DoAnalyzeRDS()
+	err = rds.NewRDSRightSize(&instanceTypesUrl, &cfg, period, parseTags(), cpuDownsize, cpuUpsize, memUpsize, types.StatName(statName)).DoAnalyzeRDS()
 
 	if err != nil {
 		log.Fatal(err)
