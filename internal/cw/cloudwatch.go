@@ -2,13 +2,20 @@ package cw
 
 import (
 	"context"
-	"github.com/luneo7/go-rds-right-size/internal/cw/types"
+	"sort"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	cwTypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
+	"github.com/luneo7/go-rds-right-size/internal/cw/types"
 )
+
+func sortTimeSeriesDataPoints(points []types.TimeSeriesDataPoint) {
+	sort.Slice(points, func(i, j int) bool {
+		return points[i].Timestamp.Before(points[j].Timestamp)
+	})
+}
 
 const (
 	namespace             = "AWS/RDS"
@@ -55,7 +62,7 @@ func (c *CloudWatch) GetMetrics(dbInstanceId *string, periodInDays int, statisti
 						},
 					},
 					Period: &period,
-					Stat:   aws.String(types.Average.String()),
+					Stat:   aws.String(types.Maximum.String()),
 				},
 			},
 			{
@@ -167,4 +174,171 @@ func (c *CloudWatch) GetMetrics(dbInstanceId *string, periodInDays int, statisti
 	}
 
 	return &m, nil
+}
+
+func (c *CloudWatch) GetTimeSeriesMetrics(dbInstanceId *string, periodInDays int, statistic types.StatName) (*types.TimeSeriesMetrics, error) {
+	endTime := time.Now().UTC().Truncate(time.Hour)
+	startTime := endTime.AddDate(0, 0, periodInDays*-1)
+
+	// Daily granularity: one data point per day
+	period := int32(24 * 60 * 60)
+
+	input := &cloudwatch.GetMetricDataInput{
+		StartTime: aws.Time(startTime),
+		EndTime:   aws.Time(endTime),
+		MetricDataQueries: []cwTypes.MetricDataQuery{
+			{
+				Id: aws.String(databaseConnectionsId),
+				MetricStat: &cwTypes.MetricStat{
+					Metric: &cwTypes.Metric{
+						Namespace:  aws.String(namespace),
+						MetricName: aws.String(types.DatabaseConnections.String()),
+						Dimensions: []cwTypes.Dimension{
+							{
+								Name:  aws.String(dimensionName),
+								Value: dbInstanceId,
+							},
+						},
+					},
+					Period: &period,
+					Stat:   aws.String(types.Maximum.String()),
+				},
+			},
+			{
+				Id: aws.String(freeableMemoryId),
+				MetricStat: &cwTypes.MetricStat{
+					Metric: &cwTypes.Metric{
+						Namespace:  aws.String(namespace),
+						MetricName: aws.String(types.FreeableMemory.String()),
+						Dimensions: []cwTypes.Dimension{
+							{
+								Name:  aws.String(dimensionName),
+								Value: dbInstanceId,
+							},
+						},
+					},
+					Period: &period,
+					Stat:   aws.String(statistic.String()),
+				},
+			},
+			{
+				Id: aws.String(cpuUtilizationId),
+				MetricStat: &cwTypes.MetricStat{
+					Metric: &cwTypes.Metric{
+						Namespace:  aws.String(namespace),
+						MetricName: aws.String(types.CPUUtilization.String()),
+						Dimensions: []cwTypes.Dimension{
+							{
+								Name:  aws.String(dimensionName),
+								Value: dbInstanceId,
+							},
+						},
+					},
+					Period: &period,
+					Stat:   aws.String(statistic.String()),
+				},
+			},
+			{
+				Id: aws.String(writeThroughputId),
+				MetricStat: &cwTypes.MetricStat{
+					Metric: &cwTypes.Metric{
+						Namespace:  aws.String(namespace),
+						MetricName: aws.String(types.WriteThroughput.String()),
+						Dimensions: []cwTypes.Dimension{
+							{
+								Name:  aws.String(dimensionName),
+								Value: dbInstanceId,
+							},
+						},
+					},
+					Period: &period,
+					Stat:   aws.String(statistic.String()),
+				},
+			},
+			{
+				Id: aws.String(readThroughputId),
+				MetricStat: &cwTypes.MetricStat{
+					Metric: &cwTypes.Metric{
+						Namespace:  aws.String(namespace),
+						MetricName: aws.String(types.ReadThroughput.String()),
+						Dimensions: []cwTypes.Dimension{
+							{
+								Name:  aws.String(dimensionName),
+								Value: dbInstanceId,
+							},
+						},
+					},
+					Period: &period,
+					Stat:   aws.String(statistic.String()),
+				},
+			},
+		},
+	}
+
+	tsMetrics := make(map[types.RdsMetricName]types.TimeSeriesMetric)
+
+	// Paginate through results (CloudWatch may return paginated time-series data)
+	paginator := func(nextToken *string) (*cloudwatch.GetMetricDataOutput, error) {
+		if nextToken != nil {
+			input.NextToken = nextToken
+		}
+		return c.cwClient.GetMetricData(context.Background(), input)
+	}
+
+	var nextToken *string
+	for {
+		output, err := paginator(nextToken)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, result := range output.MetricDataResults {
+			var metricName types.RdsMetricName
+
+			switch *result.Id {
+			case databaseConnectionsId:
+				metricName = types.DatabaseConnections
+			case freeableMemoryId:
+				metricName = types.FreeableMemory
+			case cpuUtilizationId:
+				metricName = types.CPUUtilization
+			case writeThroughputId:
+				metricName = types.WriteThroughput
+			case readThroughputId:
+				metricName = types.ReadThroughput
+			}
+
+			existing, ok := tsMetrics[metricName]
+			if !ok {
+				existing = types.TimeSeriesMetric{
+					MetricName: metricName,
+					DataPoints: make([]types.TimeSeriesDataPoint, 0),
+				}
+			}
+
+			for i, ts := range result.Timestamps {
+				existing.DataPoints = append(existing.DataPoints, types.TimeSeriesDataPoint{
+					Timestamp: ts,
+					Value:     result.Values[i],
+				})
+			}
+			tsMetrics[metricName] = existing
+		}
+
+		nextToken = output.NextToken
+		if nextToken == nil {
+			break
+		}
+	}
+
+	// Sort data points by timestamp (ascending) for each metric
+	for name, metric := range tsMetrics {
+		sortTimeSeriesDataPoints(metric.DataPoints)
+		tsMetrics[name] = metric
+	}
+
+	return &types.TimeSeriesMetrics{
+		DBInstanceIdentifier: dbInstanceId,
+		Metrics:              tsMetrics,
+	}, nil
 }

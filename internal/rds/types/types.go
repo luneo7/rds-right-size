@@ -23,6 +23,12 @@ type Instance struct {
 	// The version of the database engine for the automated backup.
 	EngineVersion *string
 
+	// The name of the DB parameter group applied to this instance.
+	DBParameterGroupName *string
+
+	// The identifier of the DB cluster that the instance belongs to (Aurora only).
+	DBClusterIdentifier *string
+
 	Tags Tags
 }
 

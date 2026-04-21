@@ -1,5 +1,7 @@
 package types
 
+import "time"
+
 type RdsMetricName string
 type StatName string
 
@@ -11,6 +13,7 @@ const (
 	WriteThroughput     RdsMetricName = "WriteThroughput"
 	ReadThroughput      RdsMetricName = "ReadThroughput"
 	Average             StatName      = "Average"
+	Maximum             StatName      = "Maximum"
 	P99                 StatName      = "p99"
 	P98                 StatName      = "p98"
 	P95                 StatName      = "p95"
@@ -32,4 +35,19 @@ type Metrics struct {
 
 type Metric struct {
 	Value *float64
+}
+
+type TimeSeriesDataPoint struct {
+	Timestamp time.Time
+	Value     float64
+}
+
+type TimeSeriesMetric struct {
+	MetricName RdsMetricName
+	DataPoints []TimeSeriesDataPoint
+}
+
+type TimeSeriesMetrics struct {
+	DBInstanceIdentifier *string
+	Metrics              map[RdsMetricName]TimeSeriesMetric
 }

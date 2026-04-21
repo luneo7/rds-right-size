@@ -4,96 +4,101 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/luneo7/go-rds-right-size/internal/cw/types"
 	"log"
 	"os"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/luneo7/go-rds-right-size/internal/cw/types"
+	"github.com/luneo7/go-rds-right-size/internal/generator"
 	rds "github.com/luneo7/go-rds-right-size/internal/rds-right-size"
+	"github.com/luneo7/go-rds-right-size/internal/tui"
 )
 
-var (
-	profile          string
-	region           string
-	tags             string
-	instanceTypesUrl string
-	statName         string
-	period           int
-	cpuUpsize        float64
-	cpuDownsize      float64
-	memUpsize        float64
+const (
+	defaultInstanceTypesURL = "https://gist.github.com/luneo7/1c331a4f7423cd2adeb2c70db55a9855/raw/33b87eb46f63b932f234b22bd7e1087ab07f1ffc/aurora_instance_types.json"
 )
-
-func init() {
-	const (
-		profileDefaultValue       = ""
-		profileUsage              = "The name of the profile to log in with"
-		tagsDefaultValue          = ""
-		tagsUsage                 = "Comma separated key/value tags map to filter instances"
-		periodDefaultValue        = 30
-		periodUsage               = "Lookback period in days"
-		regionDefaultValue        = ""
-		regionUsage               = "AWS Region to analyze"
-		cpuUpsizeDefaultValue     = 75
-		cpuUpsizeUsage            = "Average used CPU % - Upsize threshold"
-		cpuDownsizeDefaultVale    = 30
-		cpuDownsizeUsage          = "Average used CPU % - Downsize Threshold"
-		memUpsizeDefaultVale      = 5
-		memUpsizeUsage            = "Freeable Memory % of Instance Memory - Upsize threshold"
-		instanceTypesDefaultValue = "https://gist.githubusercontent.com/luneo7/fbea6db54a7bf114ba9310c3e649983b/raw/9cd77a5a9329749b5fbc502ed24dc23a6a70e103/aurora_instance_types.json"
-		instanceTypeUsage         = "Instance types JSON URL"
-		statNameDefaultVale       = "p99"
-		statNameUsage             = "Statistic to be used to determine down/upsizing (ex.: Average, p99, p95, p50)"
-	)
-
-	flag.StringVar(&profile, "profile", profileDefaultValue, profileUsage)
-	flag.StringVar(&profile, "p", profileDefaultValue, profileUsage+" (shorthand)")
-	flag.StringVar(&tags, "tags", tagsDefaultValue, tagsUsage)
-	flag.StringVar(&tags, "t", tagsDefaultValue, tagsUsage+" (shorthand)")
-	flag.IntVar(&period, "period", periodDefaultValue, periodUsage)
-	flag.IntVar(&period, "pe", periodDefaultValue, periodUsage+" (shorthand)")
-	flag.Float64Var(&cpuUpsize, "cpu-upsize", cpuUpsizeDefaultValue, cpuUpsizeUsage)
-	flag.Float64Var(&cpuUpsize, "cu", cpuUpsizeDefaultValue, cpuUpsizeUsage+" (shorthand)")
-	flag.Float64Var(&cpuDownsize, "cpu-downsize", cpuDownsizeDefaultVale, cpuDownsizeUsage)
-	flag.Float64Var(&cpuDownsize, "cd", cpuDownsizeDefaultVale, cpuDownsizeUsage+" (shorthand)")
-	flag.Float64Var(&memUpsize, "mem-upsize", memUpsizeDefaultVale, memUpsizeUsage)
-	flag.Float64Var(&memUpsize, "mu", memUpsizeDefaultVale, memUpsizeUsage+" (shorthand)")
-	flag.StringVar(&region, "region", regionDefaultValue, regionUsage)
-	flag.StringVar(&region, "r", regionDefaultValue, regionUsage+" (shorthand)")
-	flag.StringVar(&instanceTypesUrl, "instance-types", instanceTypesDefaultValue, instanceTypeUsage)
-	flag.StringVar(&instanceTypesUrl, "i", instanceTypesDefaultValue, instanceTypeUsage+" (shorthand)")
-	flag.StringVar(&statName, "stat", statNameDefaultVale, statNameUsage)
-	flag.StringVar(&statName, "s", statNameDefaultVale, statNameUsage+" (shorthand)")
-
-	flag.Parse()
-	if flag.NArg() > 0 {
-		_, _ = fmt.Fprintf(os.Stderr, "Error: Unused command line arguments detected.\n")
-		flag.Usage()
-		os.Exit(2)
-	}
-}
-
-func parseTags() map[string]string {
-	tagsEntries := strings.Split(tags, ",")
-
-	tagsMap := make(map[string]string)
-
-	if len(tagsEntries) > 0 {
-		for _, e := range tagsEntries {
-			if len(strings.TrimSpace(e)) > 0 {
-				parts := strings.Split(e, "=")
-				if len(parts) == 2 {
-					tagsMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-				}
-			}
-		}
-	}
-
-	return tagsMap
-}
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "generate-types" {
+		runGenerateTypes()
+		return
+	}
+
+	runAnalyze()
+}
+
+// runAnalyze handles the default analyze behavior (original CLI + TUI mode).
+func runAnalyze() {
+	fs := flag.NewFlagSet("analyze", flag.ExitOnError)
+
+	var (
+		profile          string
+		region           string
+		tags             string
+		instanceTypesUrl string
+		statName         string
+		period           int
+		cpuUpsize        float64
+		cpuDownsize      float64
+		memUpsize        float64
+		preferNewGen     bool
+		tuiMode          bool
+	)
+
+	fs.StringVar(&profile, "profile", "", "The name of the profile to log in with")
+	fs.StringVar(&profile, "p", "", "The name of the profile to log in with (shorthand)")
+	fs.StringVar(&tags, "tags", "", "Comma separated key/value tags map to filter instances")
+	fs.StringVar(&tags, "t", "", "Comma separated key/value tags map to filter instances (shorthand)")
+	fs.IntVar(&period, "period", 30, "Lookback period in days")
+	fs.IntVar(&period, "pe", 30, "Lookback period in days (shorthand)")
+	fs.Float64Var(&cpuUpsize, "cpu-upsize", 75, "Average used CPU % - Upsize threshold")
+	fs.Float64Var(&cpuUpsize, "cu", 75, "Average used CPU % - Upsize threshold (shorthand)")
+	fs.Float64Var(&cpuDownsize, "cpu-downsize", 30, "Average used CPU % - Downsize Threshold")
+	fs.Float64Var(&cpuDownsize, "cd", 30, "Average used CPU % - Downsize Threshold (shorthand)")
+	fs.Float64Var(&memUpsize, "mem-upsize", 5, "Freeable Memory % of Instance Memory - Upsize threshold")
+	fs.Float64Var(&memUpsize, "mu", 5, "Freeable Memory % of Instance Memory - Upsize threshold (shorthand)")
+	fs.StringVar(&region, "region", "", "AWS Region to analyze")
+	fs.StringVar(&region, "r", "", "AWS Region to analyze (shorthand)")
+	fs.StringVar(&instanceTypesUrl, "instance-types", defaultInstanceTypesURL, "Instance types JSON URL or local file path")
+	fs.StringVar(&instanceTypesUrl, "i", defaultInstanceTypesURL, "Instance types JSON URL or local file path (shorthand)")
+	fs.StringVar(&statName, "stat", "p99", "Statistic to be used to determine down/upsizing (ex.: Average, p99, p95, p50)")
+	fs.StringVar(&statName, "s", "p99", "Statistic to be used to determine down/upsizing (shorthand)")
+	fs.BoolVar(&preferNewGen, "prefer-new-gen", false, "Prefer newer instance generation when scaling (e.g., r6g -> r7g)")
+	fs.BoolVar(&preferNewGen, "ng", false, "Prefer newer instance generation when scaling (shorthand)")
+	fs.BoolVar(&tuiMode, "tui", false, "Launch interactive TUI mode")
+
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		os.Exit(2)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "Error: Unused command line arguments detected.\n")
+		fs.Usage()
+		os.Exit(2)
+	}
+
+	if tuiMode {
+		defaults := tui.ConfigValues{
+			Profile:          profile,
+			Region:           region,
+			Tags:             tags,
+			Period:           period,
+			CPUUpsize:        cpuUpsize,
+			CPUDownsize:      cpuDownsize,
+			MemUpsize:        memUpsize,
+			Stat:             statName,
+			PreferNewGen:     preferNewGen,
+			InstanceTypesURL: instanceTypesUrl,
+		}
+
+		if err := tui.Run(defaults); err != nil {
+			fmt.Printf("TUI error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Original CLI behavior
 	var optFns []func(*config.LoadOptions) error
 
 	if profile != "" {
@@ -111,9 +116,99 @@ func main() {
 		os.Exit(1)
 	}
 
-	err = rds.NewRDSRightSize(&instanceTypesUrl, &cfg, period, parseTags(), cpuDownsize, cpuUpsize, memUpsize, types.StatName(statName)).DoAnalyzeRDS()
+	err = rds.NewRDSRightSize(&instanceTypesUrl, &cfg, period, parseTags(tags), cpuDownsize, cpuUpsize, memUpsize, types.StatName(statName), preferNewGen, region).DoAnalyzeRDS()
 
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+// runGenerateTypes handles the generate-types subcommand.
+func runGenerateTypes() {
+	fs := flag.NewFlagSet("generate-types", flag.ExitOnError)
+
+	var (
+		engine        string
+		region        string
+		profile       string
+		output        string
+		targetRegions string
+	)
+
+	fs.StringVar(&engine, "engine", "both", "Database engine (both, aurora-mysql, or aurora-postgresql)")
+	fs.StringVar(&engine, "e", "both", "Database engine (shorthand)")
+	fs.StringVar(&region, "region", "", "AWS region for orderable instances and pricing")
+	fs.StringVar(&region, "r", "", "AWS region (shorthand)")
+	fs.StringVar(&profile, "profile", "", "AWS profile to use")
+	fs.StringVar(&profile, "p", "", "AWS profile (shorthand)")
+	fs.StringVar(&output, "output", "aurora_instance_types.json", "Output file path")
+	fs.StringVar(&output, "o", "aurora_instance_types.json", "Output file path (shorthand)")
+	fs.StringVar(&targetRegions, "target-regions", "all", "Target regions for pricing/availability (comma-separated or 'all')")
+	fs.StringVar(&targetRegions, "tr", "all", "Target regions (shorthand)")
+
+	// Parse from os.Args[2:] since os.Args[1] is "generate-types"
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		os.Exit(2)
+	}
+
+	if region == "" {
+		fmt.Fprintf(os.Stderr, "Error: --region is required for generate-types\n")
+		fs.Usage()
+		os.Exit(2)
+	}
+
+	if engine != "both" && engine != "aurora-mysql" && engine != "aurora-postgresql" {
+		fmt.Fprintf(os.Stderr, "Error: --engine must be 'both', 'aurora-mysql', or 'aurora-postgresql'\n")
+		fs.Usage()
+		os.Exit(2)
+	}
+
+	// Build AWS config
+	var optFns []func(*config.LoadOptions) error
+	if profile != "" {
+		optFns = append(optFns, config.WithSharedConfigProfile(profile))
+	}
+	if region != "" {
+		optFns = append(optFns, config.WithRegion(region))
+	}
+
+	cfg, err := config.LoadDefaultConfig(context.Background(), optFns...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load AWS config: %v\n", err)
+		os.Exit(1)
+	}
+
+	opts := generator.GenerateOptions{
+		Engine:        engine,
+		Region:        region,
+		TargetRegions: targetRegions,
+		Output:        output,
+		OnStatus: func(status string) {
+			fmt.Println(status)
+		},
+	}
+
+	if err := generator.GenerateInstanceTypes(context.Background(), cfg, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func parseTags(tags string) map[string]string {
+	tagsEntries := strings.Split(tags, ",")
+
+	tagsMap := make(map[string]string)
+
+	if len(tagsEntries) > 0 {
+		for _, e := range tagsEntries {
+			if len(strings.TrimSpace(e)) > 0 {
+				parts := strings.Split(e, "=")
+				if len(parts) == 2 {
+					tagsMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				}
+			}
+		}
+	}
+
+	return tagsMap
 }
