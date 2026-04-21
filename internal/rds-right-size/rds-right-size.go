@@ -17,11 +17,11 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/smithy-go/ptr"
-	"github.com/luneo7/go-rds-right-size/internal/cw"
-	cwTypes "github.com/luneo7/go-rds-right-size/internal/cw/types"
-	"github.com/luneo7/go-rds-right-size/internal/rds"
-	"github.com/luneo7/go-rds-right-size/internal/rds-right-size/types"
-	rdsTypes "github.com/luneo7/go-rds-right-size/internal/rds/types"
+	"github.com/luneo7/rds-right-size/internal/cw"
+	cwTypes "github.com/luneo7/rds-right-size/internal/cw/types"
+	"github.com/luneo7/rds-right-size/internal/rds"
+	"github.com/luneo7/rds-right-size/internal/rds-right-size/types"
+	rdsTypes "github.com/luneo7/rds-right-size/internal/rds/types"
 )
 
 const (

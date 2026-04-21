@@ -18,13 +18,13 @@ Analyzes Aurora MySQL and Aurora PostgreSQL instances against CPU and memory thr
 ## Installation
 
 ```sh
-go install github.com/luneo7/go-rds-right-size/cmd/rds-right-size@latest
+go install github.com/luneo7/rds-right-size/cmd/rds-right-size@latest
 ```
 
 Or build from source:
 
 ```sh
-git clone https://github.com/luneo7/go-rds-right-size.git
+git clone https://github.com/luneo7/rds-right-size.git
 cd rds-right-size
 go build -o rds-right-size ./cmd/rds-right-size
 ```

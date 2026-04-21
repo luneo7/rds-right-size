@@ -7,11 +7,11 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	tea "github.com/charmbracelet/bubbletea"
-	cwTypes "github.com/luneo7/go-rds-right-size/internal/cw/types"
-	"github.com/luneo7/go-rds-right-size/internal/export"
-	"github.com/luneo7/go-rds-right-size/internal/generator"
-	rds "github.com/luneo7/go-rds-right-size/internal/rds-right-size"
-	"github.com/luneo7/go-rds-right-size/internal/rds-right-size/types"
+	cwTypes "github.com/luneo7/rds-right-size/internal/cw/types"
+	"github.com/luneo7/rds-right-size/internal/export"
+	"github.com/luneo7/rds-right-size/internal/generator"
+	rds "github.com/luneo7/rds-right-size/internal/rds-right-size"
+	"github.com/luneo7/rds-right-size/internal/rds-right-size/types"
 )
 
 type screen int

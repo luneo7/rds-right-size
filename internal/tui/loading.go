@@ -7,7 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/luneo7/go-rds-right-size/internal/rds-right-size/types"
+	"github.com/luneo7/rds-right-size/internal/rds-right-size/types"
 )
 
 type ProgressMsg struct {

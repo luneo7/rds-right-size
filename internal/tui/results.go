@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	rds "github.com/luneo7/go-rds-right-size/internal/rds-right-size"
-	"github.com/luneo7/go-rds-right-size/internal/rds-right-size/types"
+	rds "github.com/luneo7/rds-right-size/internal/rds-right-size"
+	"github.com/luneo7/rds-right-size/internal/rds-right-size/types"
 )
 
 // Breakpoint thresholds for responsive table layout

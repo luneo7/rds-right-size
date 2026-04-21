@@ -12,7 +12,7 @@ import (
 	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/luneo7/go-rds-right-size/internal/rds-right-size/types"
+	"github.com/luneo7/rds-right-size/internal/rds-right-size/types"
 )
 
 // Layout constants

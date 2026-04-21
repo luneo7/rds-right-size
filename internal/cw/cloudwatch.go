@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	cwTypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
-	"github.com/luneo7/go-rds-right-size/internal/cw/types"
+	"github.com/luneo7/rds-right-size/internal/cw/types"
 )
 
 func sortTimeSeriesDataPoints(points []types.TimeSeriesDataPoint) {

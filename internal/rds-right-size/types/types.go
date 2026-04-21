@@ -1,8 +1,8 @@
 package types
 
 import (
-	cwTypes "github.com/luneo7/go-rds-right-size/internal/cw/types"
-	rdsTypes "github.com/luneo7/go-rds-right-size/internal/rds/types"
+	cwTypes "github.com/luneo7/rds-right-size/internal/cw/types"
+	rdsTypes "github.com/luneo7/rds-right-size/internal/rds/types"
 )
 
 type CPUUtilizationStatus string

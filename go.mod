@@ -1,4 +1,4 @@
-module github.com/luneo7/go-rds-right-size
+module github.com/luneo7/rds-right-size
 
 go 1.26.0
 

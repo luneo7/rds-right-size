@@ -6,7 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsRds "github.com/aws/aws-sdk-go-v2/service/rds"
-	"github.com/luneo7/go-rds-right-size/internal/rds/types"
+	"github.com/luneo7/rds-right-size/internal/rds/types"
 )
 
 type RDS struct {

@@ -11,7 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsRds "github.com/aws/aws-sdk-go-v2/service/rds"
-	"github.com/luneo7/go-rds-right-size/internal/rds-right-size/types"
+	"github.com/luneo7/rds-right-size/internal/rds-right-size/types"
 )
 
 // GenerateOptions configures the instance types generation.

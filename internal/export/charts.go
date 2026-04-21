@@ -8,7 +8,7 @@ import (
 	"time"
 
 	chart "github.com/wcharczuk/go-chart/v2"
-	cwTypes "github.com/luneo7/go-rds-right-size/internal/cw/types"
+	cwTypes "github.com/luneo7/rds-right-size/internal/cw/types"
 )
 
 const (

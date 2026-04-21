@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/fogleman/gg"
-	cwTypes "github.com/luneo7/go-rds-right-size/internal/cw/types"
-	"github.com/luneo7/go-rds-right-size/internal/rds-right-size/types"
+	cwTypes "github.com/luneo7/rds-right-size/internal/cw/types"
+	"github.com/luneo7/rds-right-size/internal/rds-right-size/types"
 )
 
 // ExportInstancePNG renders a single instance recommendation to a PNG file.

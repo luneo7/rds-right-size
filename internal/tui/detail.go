@@ -8,8 +8,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/guptarohit/asciigraph"
-	cwTypes "github.com/luneo7/go-rds-right-size/internal/cw/types"
-	"github.com/luneo7/go-rds-right-size/internal/rds-right-size/types"
+	cwTypes "github.com/luneo7/rds-right-size/internal/cw/types"
+	"github.com/luneo7/rds-right-size/internal/rds-right-size/types"
 )
 
 type DetailModel struct {

@@ -9,10 +9,10 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/luneo7/go-rds-right-size/internal/cw/types"
-	"github.com/luneo7/go-rds-right-size/internal/generator"
-	rds "github.com/luneo7/go-rds-right-size/internal/rds-right-size"
-	"github.com/luneo7/go-rds-right-size/internal/tui"
+	"github.com/luneo7/rds-right-size/internal/cw/types"
+	"github.com/luneo7/rds-right-size/internal/generator"
+	rds "github.com/luneo7/rds-right-size/internal/rds-right-size"
+	"github.com/luneo7/rds-right-size/internal/tui"
 )
 
 const (
