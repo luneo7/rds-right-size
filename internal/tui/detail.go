@@ -202,10 +202,11 @@ func (m DetailModel) renderRecommendationBadge() string {
 
 	costInfo := ""
 	if rec.MonthlyApproximatePriceDiff != nil {
-		if *rec.MonthlyApproximatePriceDiff > 0 {
-			costInfo = costIncreaseStyle.Render(fmt.Sprintf("  Monthly impact: +$%.2f", *rec.MonthlyApproximatePriceDiff))
+		diff := *rec.MonthlyApproximatePriceDiff
+		if diff > 0 {
+			costInfo = costIncreaseStyle.Render(fmt.Sprintf("  Monthly impact: +$%.2f/mo (+$%.2f/yr)", diff, diff*12))
 		} else {
-			costInfo = savingsStyle.Render(fmt.Sprintf("  Monthly savings: $%.2f", *rec.MonthlyApproximatePriceDiff*-1))
+			costInfo = savingsStyle.Render(fmt.Sprintf("  Monthly savings: $%.2f/mo ($%.2f/yr)", diff*-1, diff*-12))
 		}
 	}
 
