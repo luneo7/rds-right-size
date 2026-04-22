@@ -3,7 +3,9 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	tea "github.com/charmbracelet/bubbletea"
@@ -207,6 +209,7 @@ func (m Model) updateLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recommendations = msg.Recommendations
 		m.currentScreen = screenResults
 		m.results = NewResultsModel(m.recommendations)
+		m.results.warnings = msg.Warnings
 		m.results.width = m.width
 		m.results.height = m.height
 		return m, nil
@@ -272,7 +275,10 @@ func (m Model) updateResults(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Export selected instance as PNG
 			rec := m.results.SelectedRecommendation()
 			if rec != nil {
-				region := m.region
+				region := rec.Region
+				if region == "" {
+					region = m.region
+				}
 				if region == "" {
 					region = export.RegionFromAZ(rec.AvailabilityZone)
 				}
@@ -295,7 +301,10 @@ func (m Model) updateResults(msg tea.Msg) (tea.Model, tea.Cmd) {
 						clusterRecs = append(clusterRecs, r)
 					}
 				}
-				region := m.region
+				region := rec.Region
+				if region == "" {
+					region = m.region
+				}
 				if region == "" {
 					region = export.RegionFromAZ(rec.AvailabilityZone)
 				}
@@ -328,7 +337,10 @@ func (m Model) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Export current instance detail as PNG
 			rec := m.detail.recommendation
 			if rec != nil {
-				region := m.region
+				region := rec.Region
+				if region == "" {
+					region = m.region
+				}
 				if region == "" {
 					region = export.RegionFromAZ(rec.AvailabilityZone)
 				}
@@ -360,7 +372,14 @@ func (m Model) startAnalysis() (tea.Model, tea.Cmd) {
 	m.loading.width = m.width
 	m.loading.height = m.height
 	m.progressChan = make(chan ProgressMsg, 100)
-	m.region = values.Region
+
+	// Store first region as fallback for exports; each recommendation carries its own Region
+	regions := splitRegions(values.Region)
+	if len(regions) > 0 {
+		m.region = regions[0]
+	} else {
+		m.region = values.Region
+	}
 
 	return m, tea.Batch(
 		m.loading.Init(),
@@ -372,6 +391,11 @@ func (m Model) startAnalysis() (tea.Model, tea.Cmd) {
 func (m Model) startGeneration(submit GenerateSubmitMsg) (tea.Model, tea.Cmd) {
 	region := m.config.inputs[fieldRegion].Value()
 	profile := m.config.inputs[fieldProfile].Value()
+
+	// Use first region for generation (generation always uses a single region)
+	if parts := splitRegions(region); len(parts) > 0 {
+		region = parts[0]
+	}
 
 	if region == "" {
 		m.generate.err = fmt.Errorf("AWS Region is required — set it in the configuration screen")
@@ -428,54 +452,196 @@ func (m Model) runAnalysis(values ConfigValues) tea.Cmd {
 	progressChan := m.progressChan
 
 	return func() tea.Msg {
-		var optFns []func(*config.LoadOptions) error
-
-		if values.Profile != "" {
-			optFns = append(optFns, config.WithSharedConfigProfile(values.Profile))
-		}
-		if values.Region != "" {
-			optFns = append(optFns, config.WithRegion(values.Region))
-		}
-
-		cfg, err := config.LoadDefaultConfig(context.Background(), optFns...)
-		if err != nil {
-			close(progressChan)
-			return AnalysisDoneMsg{Err: err}
-		}
-
+		regions := splitRegions(values.Region)
 		tags := parseTags(values.Tags)
 
-		analyzer := rds.NewRDSRightSize(
-			&values.InstanceTypesURL,
-			&cfg,
-			values.Period,
-			tags,
-			values.CPUDownsize,
-			values.CPUUpsize,
-			values.MemUpsize,
-			cwTypes.StatName(values.Stat),
-			values.PreferNewGen,
-			values.Region,
-		)
+		// Single region (or no region specified) — existing behavior
+		if len(regions) <= 1 {
+			region := values.Region
 
-		opts := &rds.AnalysisOptions{
-			FetchTimeSeries: true,
-			OnProgress: func(current int, total int, instanceId string) {
-				progressChan <- ProgressMsg{
-					Current:    current,
-					Total:      total,
-					InstanceID: instanceId,
+			var optFns []func(*config.LoadOptions) error
+			if values.Profile != "" {
+				optFns = append(optFns, config.WithSharedConfigProfile(values.Profile))
+			}
+			if region != "" {
+				optFns = append(optFns, config.WithRegion(region))
+			}
+
+			cfg, err := config.LoadDefaultConfig(context.Background(), optFns...)
+			if err != nil {
+				close(progressChan)
+				return AnalysisDoneMsg{Err: err}
+			}
+
+			analyzer := rds.NewRDSRightSize(
+				&values.InstanceTypesURL,
+				&cfg,
+				values.Period,
+				tags,
+				values.CPUDownsize,
+				values.CPUUpsize,
+				values.MemUpsize,
+				cwTypes.StatName(values.Stat),
+				values.PreferNewGen,
+				region,
+			)
+
+			var warnings []string
+			opts := &rds.AnalysisOptions{
+				FetchTimeSeries: true,
+				OnProgress: func(current int, total int, instanceId string) {
+					progressChan <- ProgressMsg{
+						Current:    current,
+						Total:      total,
+						InstanceID: instanceId,
+					}
+				},
+				OnWarning: func(instanceId, msg string) {
+					warnings = append(warnings, fmt.Sprintf("%s: %s", instanceId, msg))
+				},
+			}
+
+			recommendations, err := analyzer.AnalyzeRDS(opts)
+			close(progressChan)
+			if err != nil {
+				return AnalysisDoneMsg{Err: err}
+			}
+
+			// Stamp region on each recommendation
+			for i := range recommendations {
+				recommendations[i].Region = region
+			}
+
+			return AnalysisDoneMsg{Recommendations: recommendations, Warnings: warnings}
+		}
+
+		// Multi-region parallel analysis
+		type regionResult struct {
+			region          string
+			recommendations []types.Recommendation
+			err             error
+		}
+
+		var mu sync.Mutex
+		type progress struct{ current, total int }
+		regionProg := make(map[string]*progress)
+		var allWarnings []string
+
+		results := make([]regionResult, len(regions))
+		var wg sync.WaitGroup
+
+		for i, rgn := range regions {
+			regionProg[rgn] = &progress{}
+			wg.Add(1)
+			go func(idx int, rgn string) {
+				defer wg.Done()
+
+				var optFns []func(*config.LoadOptions) error
+				if values.Profile != "" {
+					optFns = append(optFns, config.WithSharedConfigProfile(values.Profile))
 				}
-			},
+				optFns = append(optFns, config.WithRegion(rgn))
+
+				cfg, err := config.LoadDefaultConfig(context.Background(), optFns...)
+				if err != nil {
+					results[idx] = regionResult{region: rgn, err: err}
+					return
+				}
+
+				instanceTypesURL := values.InstanceTypesURL
+				analyzer := rds.NewRDSRightSize(
+					&instanceTypesURL,
+					&cfg,
+					values.Period,
+					tags,
+					values.CPUDownsize,
+					values.CPUUpsize,
+					values.MemUpsize,
+					cwTypes.StatName(values.Stat),
+					values.PreferNewGen,
+					rgn,
+				)
+
+				opts := &rds.AnalysisOptions{
+					FetchTimeSeries: true,
+					OnProgress: func(current int, total int, instanceId string) {
+						mu.Lock()
+						rp := regionProg[rgn]
+						rp.current = current
+						rp.total = total
+						var totalSum, currentSum int
+						for _, p := range regionProg {
+							totalSum += p.total
+							currentSum += p.current
+						}
+						mu.Unlock()
+						progressChan <- ProgressMsg{
+							Current:    currentSum,
+							Total:      totalSum,
+							InstanceID: fmt.Sprintf("%s (%s)", instanceId, rgn),
+						}
+					},
+					OnWarning: func(instanceId, msg string) {
+						mu.Lock()
+						allWarnings = append(allWarnings, fmt.Sprintf("%s (%s): %s", instanceId, rgn, msg))
+						mu.Unlock()
+					},
+				}
+
+				recommendations, err := analyzer.AnalyzeRDS(opts)
+				if err != nil {
+					results[idx] = regionResult{region: rgn, err: err}
+					return
+				}
+
+				// Stamp region on each recommendation
+				for j := range recommendations {
+					recommendations[j].Region = rgn
+				}
+				results[idx] = regionResult{region: rgn, recommendations: recommendations}
+			}(i, rgn)
 		}
 
-		recommendations, err := analyzer.AnalyzeRDS(opts)
+		wg.Wait()
 		close(progressChan)
-		if err != nil {
-			return AnalysisDoneMsg{Err: err}
+
+		// Merge results, collect errors
+		allRecs := make([]types.Recommendation, 0)
+		var errs []string
+		for _, r := range results {
+			if r.err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", r.region, r.err))
+				continue
+			}
+			allRecs = append(allRecs, r.recommendations...)
 		}
 
-		return AnalysisDoneMsg{Recommendations: recommendations}
+		if len(allRecs) == 0 && len(errs) > 0 {
+			return AnalysisDoneMsg{Err: fmt.Errorf("all regions failed:\n%s", strings.Join(errs, "\n"))}
+		}
+
+		// Sort: cluster members grouped, then by instance ID
+		sort.SliceStable(allRecs, func(i, j int) bool {
+			ci := allRecs[i].DBClusterIdentifier
+			cj := allRecs[j].DBClusterIdentifier
+			if ci != nil && cj == nil {
+				return true
+			}
+			if ci == nil && cj != nil {
+				return false
+			}
+			if ci != nil && cj != nil && *ci != *cj {
+				return *ci < *cj
+			}
+			ii := allRecs[i].DBInstanceIdentifier
+			ij := allRecs[j].DBInstanceIdentifier
+			if ii != nil && ij != nil {
+				return *ii < *ij
+			}
+			return false
+		})
+
+		return AnalysisDoneMsg{Recommendations: allRecs, Warnings: allWarnings}
 	}
 }
 
@@ -505,6 +671,19 @@ func parseTags(tags string) map[string]string {
 	}
 
 	return tagsMap
+}
+
+// splitRegions splits a comma-separated region string into a slice,
+// trimming whitespace and filtering empty entries.
+func splitRegions(s string) []string {
+	var regions []string
+	for _, r := range strings.Split(s, ",") {
+		r = strings.TrimSpace(r)
+		if r != "" {
+			regions = append(regions, r)
+		}
+	}
+	return regions
 }
 
 // Run starts the TUI application.

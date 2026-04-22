@@ -66,8 +66,8 @@ func NewConfigModel(defaults ConfigValues) ConfigModel {
 
 	// Region
 	inputs[fieldRegion] = textinput.New()
-	inputs[fieldRegion].Placeholder = "us-east-1"
-	inputs[fieldRegion].CharLimit = 20
+	inputs[fieldRegion].Placeholder = "us-east-1 (or us-east-1,us-west-2)"
+	inputs[fieldRegion].CharLimit = 128
 	inputs[fieldRegion].Width = 40
 	inputs[fieldRegion].SetValue(defaults.Region)
 

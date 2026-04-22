@@ -19,6 +19,7 @@ type ProgressMsg struct {
 type AnalysisDoneMsg struct {
 	Err             error
 	Recommendations []types.Recommendation
+	Warnings        []string
 }
 
 type LoadingModel struct {

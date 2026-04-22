@@ -82,6 +82,7 @@ func (p InstanceProperties) AvailableInRegion(region string) bool {
 
 type Recommendation struct {
 	rdsTypes.Instance
+	Region                      string                      `json:"Region,omitempty"`
 	Recommendation              RecommendationType
 	Reason                      RecommendationReason
 	RecommendedInstanceType     *string

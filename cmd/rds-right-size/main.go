@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/luneo7/rds-right-size/internal/cw/types"
+	cwTypes "github.com/luneo7/rds-right-size/internal/cw/types"
 	"github.com/luneo7/rds-right-size/internal/generator"
 	rds "github.com/luneo7/rds-right-size/internal/rds-right-size"
+	rdsTypes "github.com/luneo7/rds-right-size/internal/rds-right-size/types"
 	"github.com/luneo7/rds-right-size/internal/tui"
 )
 
@@ -58,8 +61,8 @@ func runAnalyze() {
 	fs.Float64Var(&cpuDownsize, "cd", 30, "Average used CPU % - Downsize Threshold (shorthand)")
 	fs.Float64Var(&memUpsize, "mem-upsize", 5, "Freeable Memory % of Instance Memory - Upsize threshold")
 	fs.Float64Var(&memUpsize, "mu", 5, "Freeable Memory % of Instance Memory - Upsize threshold (shorthand)")
-	fs.StringVar(&region, "region", "", "AWS Region to analyze")
-	fs.StringVar(&region, "r", "", "AWS Region to analyze (shorthand)")
+	fs.StringVar(&region, "region", "", "AWS Region(s) to analyze (comma-separated for multi-region)")
+	fs.StringVar(&region, "r", "", "AWS Region(s) to analyze (shorthand)")
 	fs.StringVar(&instanceTypesUrl, "instance-types", defaultInstanceTypesURL, "Instance types JSON URL or local file path")
 	fs.StringVar(&instanceTypesUrl, "i", defaultInstanceTypesURL, "Instance types JSON URL or local file path (shorthand)")
 	fs.StringVar(&statName, "stat", "p99", "Statistic to be used to determine down/upsizing (ex.: Average, p99, p95, p50)")
@@ -99,26 +102,120 @@ func runAnalyze() {
 	}
 
 	// Original CLI behavior
-	var optFns []func(*config.LoadOptions) error
+	regions := splitRegions(region)
 
-	if profile != "" {
-		optFns = append(optFns, config.WithSharedConfigProfile(profile))
+	if len(regions) <= 1 {
+		// Single region — existing behavior
+		var optFns []func(*config.LoadOptions) error
+
+		if profile != "" {
+			optFns = append(optFns, config.WithSharedConfigProfile(profile))
+		}
+
+		if region != "" {
+			optFns = append(optFns, config.WithRegion(region))
+		}
+
+		cfg, err := config.LoadDefaultConfig(context.Background(), optFns...)
+
+		if err != nil {
+			fmt.Printf("Fail to get AWS config: %v", err)
+			os.Exit(1)
+		}
+
+		err = rds.NewRDSRightSize(&instanceTypesUrl, &cfg, period, parseTags(tags), cpuDownsize, cpuUpsize, memUpsize, cwTypes.StatName(statName), preferNewGen, region).DoAnalyzeRDS()
+
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
 	}
 
-	if region != "" {
-		optFns = append(optFns, config.WithRegion(region))
+	// Multi-region parallel analysis
+	type regionResult struct {
+		region          string
+		recommendations []rdsTypes.Recommendation
+		err             error
 	}
 
-	cfg, err := config.LoadDefaultConfig(context.Background(), optFns...)
+	results := make([]regionResult, len(regions))
+	var wg sync.WaitGroup
 
-	if err != nil {
-		fmt.Printf("Fail to get AWS config: %v", err)
-		os.Exit(1)
+	for i, rgn := range regions {
+		wg.Add(1)
+		go func(idx int, rgn string) {
+			defer wg.Done()
+
+			var optFns []func(*config.LoadOptions) error
+			if profile != "" {
+				optFns = append(optFns, config.WithSharedConfigProfile(profile))
+			}
+			optFns = append(optFns, config.WithRegion(rgn))
+
+			cfg, err := config.LoadDefaultConfig(context.Background(), optFns...)
+			if err != nil {
+				results[idx] = regionResult{region: rgn, err: err}
+				return
+			}
+
+			instanceTypesURL := instanceTypesUrl
+			analyzer := rds.NewRDSRightSize(&instanceTypesURL, &cfg, period, parseTags(tags), cpuDownsize, cpuUpsize, memUpsize, cwTypes.StatName(statName), preferNewGen, rgn)
+			recommendations, err := analyzer.AnalyzeRDS(&rds.AnalysisOptions{
+				OnWarning: func(instanceId, msg string) {
+					fmt.Fprintf(os.Stderr, "Warning: skipping instance %s (%s): %s\n", instanceId, rgn, msg)
+				},
+			})
+			if err != nil {
+				results[idx] = regionResult{region: rgn, err: err}
+				return
+			}
+
+			for j := range recommendations {
+				recommendations[j].Region = rgn
+			}
+			results[idx] = regionResult{region: rgn, recommendations: recommendations}
+		}(i, rgn)
 	}
 
-	err = rds.NewRDSRightSize(&instanceTypesUrl, &cfg, period, parseTags(tags), cpuDownsize, cpuUpsize, memUpsize, types.StatName(statName), preferNewGen, region).DoAnalyzeRDS()
+	wg.Wait()
 
-	if err != nil {
+	allRecs := make([]rdsTypes.Recommendation, 0)
+	var errs []string
+	for _, r := range results {
+		if r.err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", r.region, r.err))
+			fmt.Fprintf(os.Stderr, "Warning: %s analysis failed: %v\n", r.region, r.err)
+			continue
+		}
+		allRecs = append(allRecs, r.recommendations...)
+	}
+
+	if len(allRecs) == 0 && len(errs) > 0 {
+		log.Fatalf("All regions failed:\n%s", strings.Join(errs, "\n"))
+	}
+
+	// Sort: cluster members grouped, then by instance ID
+	sort.SliceStable(allRecs, func(i, j int) bool {
+		ci := allRecs[i].DBClusterIdentifier
+		cj := allRecs[j].DBClusterIdentifier
+		if ci != nil && cj == nil {
+			return true
+		}
+		if ci == nil && cj != nil {
+			return false
+		}
+		if ci != nil && cj != nil && *ci != *cj {
+			return *ci < *cj
+		}
+		ii := allRecs[i].DBInstanceIdentifier
+		ij := allRecs[j].DBInstanceIdentifier
+		if ii != nil && ij != nil {
+			return *ii < *ij
+		}
+		return false
+	})
+
+	if err := rds.WriteResultsCLI(allRecs); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -211,4 +308,17 @@ func parseTags(tags string) map[string]string {
 	}
 
 	return tagsMap
+}
+
+// splitRegions splits a comma-separated region string into a slice,
+// trimming whitespace and filtering empty entries.
+func splitRegions(s string) []string {
+	var regions []string
+	for _, r := range strings.Split(s, ",") {
+		r = strings.TrimSpace(r)
+		if r != "" {
+			regions = append(regions, r)
+		}
+	}
+	return regions
 }

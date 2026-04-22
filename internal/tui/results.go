@@ -12,13 +12,15 @@ import (
 
 // Breakpoint thresholds for responsive table layout
 const (
-	breakpointWide   = 140
-	breakpointMedium = 100
-	breakpointNarrow = 80
+	breakpointWide   = 160
+	breakpointMedium = 120
+	breakpointNarrow = 100
+	breakpointTight  = 80
 )
 
 type columnLayout struct {
 	instanceW   int
+	regionW     int
 	clusterW    int
 	engineW     int
 	currentW    int
@@ -27,6 +29,7 @@ type columnLayout struct {
 	projCpuW    int
 	reasonW     int
 	costW       int
+	showRegion  bool
 	showCluster bool
 	showEngine  bool
 	showReason  bool
@@ -36,13 +39,14 @@ type columnLayout struct {
 
 func computeColumns(width int) columnLayout {
 	if width >= breakpointWide {
-		// Wide: all columns including Cluster and Proj CPU
-		reasonW := width - 28 - 18 - 14 - 20 - 12 - 20 - 10 - 14 - 2
+		// Wide: all columns including Region, Cluster, Engine, and Proj CPU
+		reasonW := width - 28 - 14 - 18 - 14 - 20 - 12 - 20 - 10 - 14 - 2
 		if reasonW < 10 {
 			reasonW = 10
 		}
 		return columnLayout{
 			instanceW:   28,
+			regionW:     14,
 			clusterW:    18,
 			engineW:     14,
 			currentW:    20,
@@ -51,6 +55,7 @@ func computeColumns(width int) columnLayout {
 			projCpuW:    10,
 			reasonW:     reasonW,
 			costW:       14,
+			showRegion:  true,
 			showCluster: true,
 			showEngine:  true,
 			showReason:  true,
@@ -58,7 +63,30 @@ func computeColumns(width int) columnLayout {
 			showProjCpu: true,
 		}
 	} else if width >= breakpointMedium {
-		// Medium: hide Engine, show Proj CPU, shrink Reason
+		// Medium-wide: show Region, hide Engine
+		reasonW := width - 28 - 14 - 18 - 20 - 12 - 20 - 10 - 14 - 2
+		if reasonW < 10 {
+			reasonW = 10
+		}
+		return columnLayout{
+			instanceW:   28,
+			regionW:     14,
+			clusterW:    18,
+			currentW:    20,
+			actionW:     12,
+			targetW:     20,
+			projCpuW:    10,
+			reasonW:     reasonW,
+			costW:       14,
+			showRegion:  true,
+			showCluster: true,
+			showEngine:  false,
+			showReason:  true,
+			showCurrent: true,
+			showProjCpu: true,
+		}
+	} else if width >= breakpointNarrow {
+		// Narrow: hide Region, Cluster, Engine, Proj CPU
 		reasonW := width - 26 - 18 - 12 - 18 - 10 - 14 - 2
 		if reasonW < 10 {
 			reasonW = 10
@@ -71,19 +99,21 @@ func computeColumns(width int) columnLayout {
 			projCpuW:    10,
 			reasonW:     reasonW,
 			costW:       14,
+			showRegion:  false,
 			showEngine:  false,
 			showReason:  true,
 			showCurrent: true,
 			showProjCpu: true,
 		}
-	} else if width >= breakpointNarrow {
-		// Narrow: hide Engine, Reason, Proj CPU
+	} else if width >= breakpointTight {
+		// Tight: Instance, Current, Action, Recommended, Cost
 		return columnLayout{
 			instanceW:   22,
 			currentW:    18,
 			actionW:     12,
 			targetW:     18,
 			costW:       width - 22 - 18 - 12 - 18 - 2,
+			showRegion:  false,
 			showEngine:  false,
 			showReason:  false,
 			showCurrent: true,
@@ -96,6 +126,7 @@ func computeColumns(width int) columnLayout {
 		actionW:     12,
 		targetW:     18,
 		costW:       12,
+		showRegion:  false,
 		showEngine:  false,
 		showReason:  false,
 		showCurrent: false,
@@ -105,6 +136,7 @@ func computeColumns(width int) columnLayout {
 
 type ResultsModel struct {
 	recommendations []types.Recommendation
+	warnings        []string
 	cursor          int
 	scrollOffset    int
 	width           int
@@ -164,12 +196,32 @@ func (m ResultsModel) Update(msg tea.Msg) (ResultsModel, tea.Cmd) {
 	return m, nil
 }
 
+// distinctRegions returns the number of distinct regions in the recommendations.
+func (m ResultsModel) distinctRegions() int {
+	seen := make(map[string]bool)
+	for _, rec := range m.recommendations {
+		if rec.Region != "" {
+			seen[rec.Region] = true
+		}
+	}
+	return len(seen)
+}
+
 func (m ResultsModel) visibleRows() int {
 	// Reserve lines for fixed elements:
 	// Title (2: text + margin), Summary box (~7: margin + border + content(3 lines w/ terminate) + border + newline),
 	// Header (3: prefix + text + border + newline), Scroll indicator (1), Export status (1),
 	// Help (2: newline + margin + text), Extra padding (2)
 	reserved := 18
+	// Add extra lines for per-region breakdown in summary
+	regionCount := m.distinctRegions()
+	if regionCount > 1 {
+		reserved += regionCount
+	}
+	// Add extra line for skipped instances warning
+	if len(m.warnings) > 0 {
+		reserved++
+	}
 	available := m.height - reserved
 	if available < 3 {
 		available = 3
@@ -294,6 +346,21 @@ func (m ResultsModel) renderSummary() string {
 		costLines = formatCostLine("Savings", cb.TotalMonthly)
 	}
 
+	// Per-region breakdown when multiple regions are present
+	regionalCB, regions := rds.CalculateRegionalCostBreakdown(m.recommendations)
+	if len(regions) > 1 {
+		for _, region := range regions {
+			rcb := regionalCB[region]
+			costLines += "\n" + formatCostLine("  "+region, rcb.TotalMonthly)
+		}
+	}
+
+	// Skipped instances warning
+	if len(m.warnings) > 0 {
+		warnText := fmt.Sprintf("  %d instance(s) skipped (missing CloudWatch metrics)", len(m.warnings))
+		costLines += "\n" + lipgloss.NewStyle().Foreground(warningColor).Render(warnText)
+	}
+
 	content := counts + "\n" + costLines
 	return summaryBoxStyle.Render(content)
 }
@@ -303,6 +370,9 @@ func (m ResultsModel) renderHeader() string {
 
 	var cols []string
 	cols = append(cols, tableHeaderStyle.Width(layout.instanceW).Render("Instance ID"))
+	if layout.showRegion {
+		cols = append(cols, tableHeaderStyle.Width(layout.regionW).Render("Region"))
+	}
 	if layout.showCluster {
 		cols = append(cols, tableHeaderStyle.Width(layout.clusterW).Render("Cluster"))
 	}
@@ -338,6 +408,12 @@ func (m ResultsModel) renderRow(rec types.Recommendation, selected bool) string 
 	}
 	if len(instanceID) > maxInstLen {
 		instanceID = instanceID[:maxInstLen-2] + ".."
+	}
+
+	region := rec.Region
+	maxRegionLen := layout.regionW - 2
+	if maxRegionLen > 0 && len(region) > maxRegionLen {
+		region = region[:maxRegionLen-2] + ".."
 	}
 
 	clusterID := ""
@@ -412,6 +488,9 @@ func (m ResultsModel) renderRow(rec types.Recommendation, selected bool) string 
 
 	var cols []string
 	cols = append(cols, baseStyle.Width(layout.instanceW).Render(instanceID))
+	if layout.showRegion {
+		cols = append(cols, baseStyle.Width(layout.regionW).Render(region))
+	}
 	if layout.showCluster {
 		cols = append(cols, baseStyle.Width(layout.clusterW).Render(clusterID))
 	}

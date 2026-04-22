@@ -42,6 +42,10 @@ type AnalysisOptions struct {
 
 	// OnProgress is an optional callback invoked for each instance analyzed.
 	OnProgress ProgressCallback
+
+	// OnWarning is an optional callback invoked when an instance is skipped
+	// due to missing CloudWatch metrics (e.g., transient auto-scaling replicas).
+	OnWarning func(instanceId string, msg string)
 }
 
 type RDSRightSize struct {
@@ -356,13 +360,22 @@ func (r *RDSRightSize) tryUpgradeRecommendation(
 // DoAnalyzeRDS is the original CLI entry point. It runs the analysis and writes
 // results to a JSON file and prints cost summary to stdout.
 func (r *RDSRightSize) DoAnalyzeRDS() error {
-	recommendations, err := r.AnalyzeRDS(nil)
+	opts := &AnalysisOptions{
+		OnWarning: func(instanceId, msg string) {
+			fmt.Fprintf(os.Stderr, "Warning: skipping instance %s: %s\n", instanceId, msg)
+		},
+	}
+	recommendations, err := r.AnalyzeRDS(opts)
 	if err != nil {
 		return err
 	}
 
-	r.writeApproximateCostDifference(recommendations)
-	return r.writeRecommendations(recommendations)
+	// Stamp region on each recommendation for single-region CLI usage
+	for i := range recommendations {
+		recommendations[i].Region = r.region
+	}
+
+	return WriteResultsCLI(recommendations)
 }
 
 // AnalyzeRDS performs the core analysis and returns recommendations as data.
@@ -370,6 +383,12 @@ func (r *RDSRightSize) DoAnalyzeRDS() error {
 func (r *RDSRightSize) AnalyzeRDS(opts *AnalysisOptions) ([]types.Recommendation, error) {
 	if opts == nil {
 		opts = &AnalysisOptions{}
+	}
+
+	warn := func(instanceId, msg string) {
+		if opts.OnWarning != nil {
+			opts.OnWarning(instanceId, msg)
+		}
 	}
 
 	recommendations := make([]types.Recommendation, 0)
@@ -423,7 +442,8 @@ func (r *RDSRightSize) AnalyzeRDS(opts *AnalysisOptions) ([]types.Recommendation
 
 		noConnections, err := r.hadNoConnections(metrics)
 		if err != nil {
-			return nil, err
+			warn(*instance.DBInstanceIdentifier, err.Error())
+			continue
 		}
 
 		if *noConnections {
@@ -449,7 +469,8 @@ func (r *RDSRightSize) AnalyzeRDS(opts *AnalysisOptions) ([]types.Recommendation
 
 				memoryUtilization, err := r.getMemoryUtilization(metrics, &instanceProperties)
 				if err != nil {
-					return nil, err
+					warn(*instance.DBInstanceIdentifier, err.Error())
+					continue
 				}
 
 			if *memoryUtilization.UnderProvisioned && instanceProperties.Up != nil {
@@ -477,13 +498,14 @@ func (r *RDSRightSize) AnalyzeRDS(opts *AnalysisOptions) ([]types.Recommendation
 				} else {
 					cpuUtilization, err := r.getCPUUtilization(metrics)
 					if err != nil {
-						return nil, err
+						warn(*instance.DBInstanceIdentifier, err.Error())
+						continue
 					}
 
 					bandwidthUtilization, err := r.getBandwidthUtilization(metrics, &instanceProperties)
-
 					if err != nil {
-						return nil, err
+						warn(*instance.DBInstanceIdentifier, err.Error())
+						continue
 					}
 
 				if cpuUtilization.Status == types.CPUUnderProvisioned && instanceProperties.Up != nil {
@@ -937,6 +959,48 @@ func CalculateCostBreakdown(recommendations []types.Recommendation) CostBreakdow
 	}
 	return cb
 }
+
+// CalculateRegionalCostBreakdown computes cost breakdowns grouped by region.
+// Returns a map of region -> CostBreakdown, and a sorted slice of region names.
+func CalculateRegionalCostBreakdown(recommendations []types.Recommendation) (map[string]CostBreakdown, []string) {
+	byRegion := make(map[string]CostBreakdown)
+	for _, rec := range recommendations {
+		region := rec.Region
+		if region == "" {
+			continue
+		}
+		cb := byRegion[region]
+		if rec.MonthlyApproximatePriceDiff != nil {
+			diff := *rec.MonthlyApproximatePriceDiff
+			cb.TotalMonthly += diff
+			if rec.Recommendation == types.Terminate {
+				cb.HasTerminations = true
+			} else {
+				cb.ScalingMonthly += diff
+			}
+		}
+		byRegion[region] = cb
+	}
+
+	regions := make([]string, 0, len(byRegion))
+	for r := range byRegion {
+		regions = append(regions, r)
+	}
+	sort.Strings(regions)
+	return byRegion, regions
+}
+
+// WriteResultsCLI prints cost summary to stdout and writes the JSON file.
+// This is used by both single-region DoAnalyzeRDS and multi-region CLI orchestration.
+func WriteResultsCLI(recommendations []types.Recommendation) error {
+	writeApproximateCostDifference(recommendations)
+	absPath, err := WriteRecommendationsJSON(recommendations)
+	if err != nil {
+		return err
+	}
+	fmt.Println(absPath)
+	return nil
+}
 func WriteRecommendationsJSON(recommendations []types.Recommendation) (string, error) {
 	data, err := json.MarshalIndent(recommendations, "", "  ")
 	if err != nil {
@@ -962,7 +1026,7 @@ func Float64(v float64) *float64 {
 	return ptr.Float64(v)
 }
 
-func (r *RDSRightSize) writeApproximateCostDifference(recommendations []types.Recommendation) {
+func writeApproximateCostDifference(recommendations []types.Recommendation) {
 	cb := CalculateCostBreakdown(recommendations)
 
 	formatLine := func(label string, monthly float64) string {
@@ -976,7 +1040,6 @@ func (r *RDSRightSize) writeApproximateCostDifference(recommendations []types.Re
 	}
 
 	if cb.HasTerminations && cb.ScalingMonthly != cb.TotalMonthly {
-		// Show both lines when terminations contribute differently
 		if scalingLine := formatLine("Scaling changes", cb.ScalingMonthly); scalingLine != "" {
 			fmt.Println(scalingLine)
 		} else {
@@ -986,26 +1049,29 @@ func (r *RDSRightSize) writeApproximateCostDifference(recommendations []types.Re
 			fmt.Println(totalLine)
 		}
 	} else {
-		// Single line when no terminations or they don't change the number
-		if line := formatLine("The changes will yield a", cb.TotalMonthly); line != "" {
-			// Reformat for backward-compatible phrasing
-			if cb.TotalMonthly > 0 {
-				fmt.Println(fmt.Sprintf("The changes will yield a price increase of approximately $%.2f/month ($%.2f/year)", cb.TotalMonthly, cb.TotalMonthly*12))
-			} else if cb.TotalMonthly < 0 {
-				savings := cb.TotalMonthly * -1
-				fmt.Println(fmt.Sprintf("The changes will yield a savings of approximately $%.2f/month ($%.2f/year)", savings, savings*12))
+		if cb.TotalMonthly > 0 {
+			fmt.Println(fmt.Sprintf("The changes will yield a price increase of approximately $%.2f/month ($%.2f/year)", cb.TotalMonthly, cb.TotalMonthly*12))
+		} else if cb.TotalMonthly < 0 {
+			savings := cb.TotalMonthly * -1
+			fmt.Println(fmt.Sprintf("The changes will yield a savings of approximately $%.2f/month ($%.2f/year)", savings, savings*12))
+		}
+	}
+
+	// Per-region breakdown when multiple regions are present
+	regionalCB, regions := CalculateRegionalCostBreakdown(recommendations)
+	if len(regions) > 1 {
+		for _, region := range regions {
+			rcb := regionalCB[region]
+			if rcb.TotalMonthly > 0 {
+				fmt.Printf("  %s: price increase of approximately $%.2f/month ($%.2f/year)\n", region, rcb.TotalMonthly, rcb.TotalMonthly*12)
+			} else if rcb.TotalMonthly < 0 {
+				savings := rcb.TotalMonthly * -1
+				fmt.Printf("  %s: savings of approximately $%.2f/month ($%.2f/year)\n", region, savings, savings*12)
+			} else {
+				fmt.Printf("  %s: no cost impact\n", region)
 			}
 		}
 	}
-}
-
-func (r *RDSRightSize) writeRecommendations(recommendations []types.Recommendation) error {
-	absPath, err := WriteRecommendationsJSON(recommendations)
-	if err != nil {
-		return err
-	}
-	fmt.Println(absPath)
-	return nil
 }
 
 func (r *RDSRightSize) getFilenameWithDate() string {
@@ -1039,7 +1105,7 @@ func (r *RDSRightSize) hadNoConnections(metrics *cwTypes.Metrics) (*bool, error)
 	metric, ok := metrics.InstanceMetrics[cwTypes.DatabaseConnections]
 
 	if !ok {
-		return nil, errors.New("no database connections metric found")
+		return nil, errors.New("no database connections metric found for instance " + *metrics.DBInstanceIdentifier)
 	}
 
 	if metric.Value == nil || *metric.Value == 0 {

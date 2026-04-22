@@ -14,6 +14,8 @@ Analyzes Aurora MySQL and Aurora PostgreSQL instances against CPU and memory thr
 - **Time series charts** — CPU, memory, connections, and throughput charts in TUI detail view and PNG exports
 - **PNG export** — export individual instance or full cluster reports as PNG images
 - **Interactive TUI** — full-featured terminal UI with configuration, results table, detail view, and built-in instance types generation
+- **Multi-region analysis** — analyze multiple regions in parallel with a single command; results are merged with per-region cost breakdowns
+- **Graceful metric handling** — instances with missing CloudWatch data (e.g., transient auto-scaling replicas) are skipped with a warning instead of failing the analysis
 
 ## Installation
 
@@ -37,6 +39,9 @@ rds-right-size --profile my-profile --region us-east-1
 
 # Interactive TUI mode
 rds-right-size --tui --region us-east-1
+
+# Multi-region analysis
+rds-right-size --region us-east-1,eu-west-2 --profile my-profile
 
 # Generate instance types JSON, then analyze with it
 rds-right-size generate-types --region us-east-1 --output types.json
@@ -68,7 +73,7 @@ rds-right-size --region us-east-1 --cpu-upsize 80 --cpu-downsize 40 --mem-upsize
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--profile` | `-p` | | AWS profile name |
-| `--region` | `-r` | | AWS region to analyze |
+| `--region` | `-r` | | AWS region(s) to analyze (comma-separated for multi-region) |
 | `--tags` | `-t` | | Tag filters (`key=value,key2=value2`) |
 | `--period` | `-pe` | `30` | Lookback period in days |
 | `--cpu-upsize` | `-cu` | `75` | CPU % threshold to trigger upscale |
@@ -89,7 +94,7 @@ rds-right-size --tui --profile my-profile --region us-east-1 --tags env=prod
 
 The TUI has four screens:
 
-1. **Configuration** — set analysis parameters (profile, region, tags, thresholds, statistic, etc.)
+1. **Configuration** — set analysis parameters (profile, region or comma-separated regions, tags, thresholds, statistic, etc.)
 2. **Loading** — progress bar while analyzing instances
 3. **Results** — sortable table of all recommendations with cost summary
 4. **Detail** — per-instance breakdown with comparison cards and time series charts
@@ -188,6 +193,7 @@ After analysis, a JSON file is written to the current directory:
 ```json
 [
   {
+    "Region": "us-east-1",
     "AvailabilityZone": "us-east-1b",
     "DBInstanceArn": "arn:aws:rds:us-east-1:account:db:instancename-0",
     "DBInstanceIdentifier": "instancename-0",

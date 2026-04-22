@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -216,9 +217,16 @@ func (m GenerateModel) View() string {
 
 	// Show the inherited region as a read-only display
 	regionLabel := labelStyle.Render("AWS Region")
-	regionValue := lipgloss.NewStyle().Foreground(dimTextColor).Render(m.region)
+	var regionValue string
 	if m.region == "" {
 		regionValue = lipgloss.NewStyle().Foreground(dangerColor).Render("(not set — set in config)")
+	} else if parts := strings.Split(m.region, ","); len(parts) > 1 {
+		first := strings.TrimSpace(parts[0])
+		note := fmt.Sprintf(" (first of %d regions)", len(parts))
+		regionValue = lipgloss.NewStyle().Foreground(dimTextColor).Render(first) +
+			lipgloss.NewStyle().Foreground(dimTextColor).Italic(true).Render(note)
+	} else {
+		regionValue = lipgloss.NewStyle().Foreground(dimTextColor).Render(m.region)
 	}
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Center, regionLabel, regionValue) + "\n\n")
 
