@@ -12,7 +12,6 @@ var (
 	mutedColor     = lipgloss.Color("#6B7280") // Gray
 	textColor      = lipgloss.Color("#F9FAFB") // White
 	dimTextColor   = lipgloss.Color("#9CA3AF") // Light gray
-	bgColor        = lipgloss.Color("#111827") // Dark background
 	surfaceColor   = lipgloss.Color("#1F2937") // Slightly lighter background
 	borderColor    = lipgloss.Color("#374151") // Border gray
 
@@ -46,11 +45,6 @@ var (
 				Width(22).
 				Align(lipgloss.Right).
 				MarginRight(2)
-
-	inputFieldStyle = lipgloss.NewStyle().
-			Foreground(textColor).
-			Background(surfaceColor).
-			Padding(0, 1)
 
 	// Button styles
 	focusedButtonStyle = lipgloss.NewStyle().

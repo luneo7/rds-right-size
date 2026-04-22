@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsRds "github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/luneo7/rds-right-size/internal/rds-right-size/types"
+	"github.com/luneo7/rds-right-size/internal/util"
 )
 
 // GenerateOptions configures the instance types generation.
@@ -52,7 +53,7 @@ func GenerateInstanceTypes(ctx context.Context, cfg aws.Config, opts GenerateOpt
 	}
 
 	// Discover target regions
-	targetRegions, err := resolveTargetRegions(ctx, opts.TargetRegions, opts.Region)
+	targetRegions, err := resolveTargetRegions(ctx, opts.TargetRegions, opts.Region, status)
 	if err != nil {
 		return fmt.Errorf("failed to resolve target regions: %w", err)
 	}
@@ -118,7 +119,8 @@ func GenerateInstanceTypes(ctx context.Context, cfg aws.Config, opts GenerateOpt
 // resolveTargetRegions determines which AWS regions to include in the generated JSON.
 // If targetRegions is "all" or empty, it fetches the public AWS pricing region index.
 // Otherwise, it parses the comma-separated list.
-func resolveTargetRegions(ctx context.Context, targetRegions string, homeRegion string) ([]string, error) {
+// warn is called (non-nil) when a non-fatal fallback occurs.
+func resolveTargetRegions(ctx context.Context, targetRegions string, homeRegion string, warn func(string)) ([]string, error) {
 	if targetRegions != "" && targetRegions != "all" {
 		// Parse comma-separated list
 		parts := strings.Split(targetRegions, ",")
@@ -137,6 +139,7 @@ func resolveTargetRegions(ctx context.Context, targetRegions string, homeRegion 
 	if err != nil {
 		// Fallback: if region index fails, use just the home region
 		if homeRegion != "" {
+			warn(fmt.Sprintf("Warning: region list fetch failed (%v); falling back to home region %s only", err, homeRegion))
 			return []string{homeRegion}, nil
 		}
 		return nil, fmt.Errorf("region index fetch failed and no home region specified: %w", err)
@@ -389,7 +392,6 @@ func fetchMultiRegionData(
 }
 
 // computeMinEngineVersion finds the minimum engine version from a list of version strings.
-// Uses numeric segment comparison.
 func computeMinEngineVersion(versions []string) string {
 	if len(versions) == 0 {
 		return ""
@@ -397,63 +399,11 @@ func computeMinEngineVersion(versions []string) string {
 
 	min := versions[0]
 	for _, v := range versions[1:] {
-		if compareVersionStrings(v, min) < 0 {
+		if util.CompareVersions(v, min) < 0 {
 			min = v
 		}
 	}
 	return min
-}
-
-// compareVersionStrings compares two version strings by extracting numeric segments.
-// Returns -1 if a < b, 0 if a == b, 1 if a > b.
-func compareVersionStrings(a, b string) int {
-	aSegs := extractNumericSegments(a)
-	bSegs := extractNumericSegments(b)
-
-	maxLen := len(aSegs)
-	if len(bSegs) > maxLen {
-		maxLen = len(bSegs)
-	}
-
-	for i := 0; i < maxLen; i++ {
-		aVal := 0
-		if i < len(aSegs) {
-			aVal = aSegs[i]
-		}
-		bVal := 0
-		if i < len(bSegs) {
-			bVal = bSegs[i]
-		}
-		if aVal < bVal {
-			return -1
-		}
-		if aVal > bVal {
-			return 1
-		}
-	}
-	return 0
-}
-
-// extractNumericSegments splits a version string by "." and returns numeric parts as ints.
-func extractNumericSegments(version string) []int {
-	parts := strings.Split(version, ".")
-	var segments []int
-	for _, p := range parts {
-		n := 0
-		isNum := true
-		for _, c := range p {
-			if c >= '0' && c <= '9' {
-				n = n*10 + int(c-'0')
-			} else {
-				isNum = false
-				break
-			}
-		}
-		if isNum && len(p) > 0 {
-			segments = append(segments, n)
-		}
-	}
-	return segments
 }
 
 // instanceFamilyKey extracts the family prefix from an instance class.

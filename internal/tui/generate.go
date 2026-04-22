@@ -38,7 +38,7 @@ type GenerateModel struct {
 	height      int
 }
 
-func NewGenerateModel(region string) GenerateModel {
+func NewGenerateModel(region string, width, height int) GenerateModel {
 	inputs := make([]textinput.Model, 3)
 
 	// Engine (cycling selector — uses a dummy text input for focus tracking)
@@ -64,6 +64,8 @@ func NewGenerateModel(region string) GenerateModel {
 		inputs:     inputs,
 		focusIndex: genFieldEngine,
 		region:     region,
+		width:      width,
+		height:     height,
 	}
 }
 

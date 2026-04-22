@@ -31,7 +31,7 @@ type LoadingModel struct {
 	height   int
 }
 
-func NewLoadingModel() LoadingModel {
+func NewLoadingModel(width, height int) LoadingModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(primaryColor)
@@ -39,6 +39,8 @@ func NewLoadingModel() LoadingModel {
 	return LoadingModel{
 		spinner: s,
 		status:  "Initializing...",
+		width:   width,
+		height:  height,
 	}
 }
 

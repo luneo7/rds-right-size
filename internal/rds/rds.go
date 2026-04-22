@@ -19,7 +19,7 @@ func NewRDS(awsConfig *aws.Config) *RDS {
 	}
 }
 
-func (r *RDS) GetInstances() ([]types.Instance, error) {
+func (r *RDS) GetInstances(ctx context.Context) ([]types.Instance, error) {
 	var output *awsRds.DescribeDBInstancesOutput
 	var err error
 	var dbInstances []types.Instance
@@ -27,7 +27,7 @@ func (r *RDS) GetInstances() ([]types.Instance, error) {
 	paginator := awsRds.NewDescribeDBInstancesPaginator(r.rdsClient, &awsRds.DescribeDBInstancesInput{})
 
 	for paginator.HasMorePages() {
-		output, err = paginator.NextPage(context.TODO())
+		output, err = paginator.NextPage(ctx)
 		if err == nil {
 			b := make([]types.Instance, len(output.DBInstances))
 			for i, v := range output.DBInstances {
@@ -69,7 +69,7 @@ func (r *RDS) GetInstances() ([]types.Instance, error) {
 // Returns the numeric value if explicitly set to a static number, or nil if it's
 // a formula, unset, or if the API call fails. The caller should fall back to the
 // JSON-defined maxConnections for the target instance type when nil is returned.
-func (r *RDS) GetMaxConnections(paramGroupName *string) (*int64, error) {
+func (r *RDS) GetMaxConnections(ctx context.Context, paramGroupName *string) (*int64, error) {
 	if paramGroupName == nil || *paramGroupName == "" {
 		return nil, nil
 	}
@@ -79,7 +79,7 @@ func (r *RDS) GetMaxConnections(paramGroupName *string) (*int64, error) {
 	})
 
 	for paginator.HasMorePages() {
-		output, err := paginator.NextPage(context.TODO())
+		output, err := paginator.NextPage(ctx)
 		if err != nil {
 			return nil, err
 		}

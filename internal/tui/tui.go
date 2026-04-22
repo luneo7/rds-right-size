@@ -3,9 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strings"
-	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,6 +11,7 @@ import (
 	"github.com/luneo7/rds-right-size/internal/generator"
 	rds "github.com/luneo7/rds-right-size/internal/rds-right-size"
 	"github.com/luneo7/rds-right-size/internal/rds-right-size/types"
+	"github.com/luneo7/rds-right-size/internal/util"
 )
 
 type screen int
@@ -49,16 +47,17 @@ type Model struct {
 	height        int
 
 	// Analysis state
-	recommendations []types.Recommendation
-	progressChan    chan ProgressMsg
-	region          string // AWS region from config, used for pricing lookups and exports
+	progressChan   chan ProgressMsg
+	statusChan     chan string         // receives generation status text from OnStatus callbacks
+	cancelAnalysis context.CancelFunc // cancels the running analysis goroutine
+	region         string             // AWS region from config, used for pricing lookups and exports
 }
 
 func NewModel(defaults ConfigValues) Model {
 	return Model{
 		currentScreen: screenConfig,
 		config:        NewConfigModel(defaults),
-		loading:       NewLoadingModel(),
+		loading:       NewLoadingModel(0, 0),
 	}
 }
 
@@ -165,9 +164,7 @@ func (m Model) openGenerate() (tea.Model, tea.Cmd) {
 	// Read the current region from config to pass to the generation dialog
 	region := m.config.inputs[fieldRegion].Value()
 
-	m.generate = NewGenerateModel(region)
-	m.generate.width = m.width
-	m.generate.height = m.height
+	m.generate = NewGenerateModel(region, m.width, m.height)
 	m.currentScreen = screenGenerate
 
 	return m, m.generate.Init()
@@ -192,6 +189,11 @@ func (m Model) updateLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if msg.String() == "esc" {
+			// Cancel the running analysis goroutine to prevent it from blocking on progressChan.
+			if m.cancelAnalysis != nil {
+				m.cancelAnalysis()
+				m.cancelAnalysis = nil
+			}
 			m.currentScreen = screenConfig
 			return m, m.config.Init()
 		}
@@ -201,17 +203,19 @@ func (m Model) updateLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForProgress(m.progressChan)
 
 	case AnalysisDoneMsg:
+		// Analysis finished (success or error) — release the cancel function.
+		if m.cancelAnalysis != nil {
+			m.cancelAnalysis()
+			m.cancelAnalysis = nil
+		}
 		if msg.Err != nil {
 			m.config.err = msg.Err
 			m.currentScreen = screenConfig
 			return m, m.config.Init()
 		}
-		m.recommendations = msg.Recommendations
 		m.currentScreen = screenResults
-		m.results = NewResultsModel(m.recommendations)
+		m.results = NewResultsModel(msg.Recommendations, m.width, m.height)
 		m.results.warnings = msg.Warnings
-		m.results.width = m.width
-		m.results.height = m.height
 		return m, nil
 	}
 
@@ -230,7 +234,8 @@ func (m Model) updateGenerating(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case GenerateStatusMsg:
 		m.loading = m.loading.SetStatus(msg.Status)
-		return m, nil
+		// Re-chain to wait for the next status update.
+		return m, waitForStatus(m.statusChan)
 
 	case GenerateDoneMsg:
 		if msg.Err != nil {
@@ -264,7 +269,7 @@ func (m Model) updateResults(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentScreen = screenConfig
 			return m, m.config.Init()
 		case "e":
-			path, err := rds.WriteRecommendationsJSON(m.recommendations)
+			path, err := rds.WriteRecommendationsJSON(m.results.recommendations)
 			if err != nil {
 				m.results = m.results.SetExportErr(err.Error())
 			} else {
@@ -296,7 +301,7 @@ func (m Model) updateResults(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if rec != nil && rec.DBClusterIdentifier != nil && *rec.DBClusterIdentifier != "" {
 				clusterID := *rec.DBClusterIdentifier
 				var clusterRecs []types.Recommendation
-				for _, r := range m.recommendations {
+				for _, r := range m.results.recommendations {
 					if r.DBClusterIdentifier != nil && *r.DBClusterIdentifier == clusterID {
 						clusterRecs = append(clusterRecs, r)
 					}
@@ -368,13 +373,15 @@ func (m Model) startAnalysis() (tea.Model, tea.Cmd) {
 	}
 
 	m.currentScreen = screenLoading
-	m.loading = NewLoadingModel()
-	m.loading.width = m.width
-	m.loading.height = m.height
+	m.loading = NewLoadingModel(m.width, m.height)
 	m.progressChan = make(chan ProgressMsg, 100)
 
+	// Create a cancellable context so ESC can abort the in-flight analysis goroutine.
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelAnalysis = cancel
+
 	// Store first region as fallback for exports; each recommendation carries its own Region
-	regions := splitRegions(values.Region)
+	regions := util.SplitRegions(values.Region)
 	if len(regions) > 0 {
 		m.region = regions[0]
 	} else {
@@ -383,7 +390,7 @@ func (m Model) startAnalysis() (tea.Model, tea.Cmd) {
 
 	return m, tea.Batch(
 		m.loading.Init(),
-		m.runAnalysis(values),
+		m.runAnalysis(ctx, values),
 		waitForProgress(m.progressChan),
 	)
 }
@@ -393,7 +400,7 @@ func (m Model) startGeneration(submit GenerateSubmitMsg) (tea.Model, tea.Cmd) {
 	profile := m.config.inputs[fieldProfile].Value()
 
 	// Use first region for generation (generation always uses a single region)
-	if parts := splitRegions(region); len(parts) > 0 {
+	if parts := util.SplitRegions(region); len(parts) > 0 {
 		region = parts[0]
 	}
 
@@ -403,18 +410,20 @@ func (m Model) startGeneration(submit GenerateSubmitMsg) (tea.Model, tea.Cmd) {
 	}
 
 	m.currentScreen = screenGenerating
-	m.loading = NewLoadingModel()
-	m.loading.width = m.width
-	m.loading.height = m.height
+	m.loading = NewLoadingModel(m.width, m.height)
 	m.loading = m.loading.SetStatus("Generating instance types...")
+
+	// statusChan relays OnStatus messages from the blocking generator goroutine to the TUI.
+	m.statusChan = make(chan string, 50)
 
 	return m, tea.Batch(
 		m.loading.Init(),
-		m.runGeneration(profile, region, submit),
+		m.runGeneration(profile, region, submit, m.statusChan),
+		waitForStatus(m.statusChan),
 	)
 }
 
-func (m Model) runGeneration(profile, region string, submit GenerateSubmitMsg) tea.Cmd {
+func (m Model) runGeneration(profile, region string, submit GenerateSubmitMsg, statusChan chan string) tea.Cmd {
 	return func() tea.Msg {
 		var optFns []func(*config.LoadOptions) error
 		if profile != "" {
@@ -426,6 +435,7 @@ func (m Model) runGeneration(profile, region string, submit GenerateSubmitMsg) t
 
 		cfg, err := config.LoadDefaultConfig(context.Background(), optFns...)
 		if err != nil {
+			close(statusChan)
 			return GenerateDoneMsg{Err: err}
 		}
 
@@ -435,25 +445,29 @@ func (m Model) runGeneration(profile, region string, submit GenerateSubmitMsg) t
 			TargetRegions: submit.TargetRegions,
 			Output:        submit.OutputFile,
 			OnStatus: func(status string) {
-				// Note: OnStatus runs synchronously inside GenerateInstanceTypes,
-				// but we can't send tea.Msgs from here since we're already in a Cmd.
+				select {
+				case statusChan <- status:
+				default: // drop if buffer is full rather than block the generator
+				}
 			},
 		}
 
-		if err := generator.GenerateInstanceTypes(context.Background(), cfg, opts); err != nil {
-			return GenerateDoneMsg{Err: err}
+		genErr := generator.GenerateInstanceTypes(context.Background(), cfg, opts)
+		close(statusChan) // signal waitForStatus to stop chaining
+		if genErr != nil {
+			return GenerateDoneMsg{Err: genErr}
 		}
 
 		return GenerateDoneMsg{OutputPath: submit.OutputFile}
 	}
 }
 
-func (m Model) runAnalysis(values ConfigValues) tea.Cmd {
+func (m Model) runAnalysis(ctx context.Context, values ConfigValues) tea.Cmd {
 	progressChan := m.progressChan
 
 	return func() tea.Msg {
-		regions := splitRegions(values.Region)
-		tags := parseTags(values.Tags)
+		regions := util.SplitRegions(values.Region)
+		tags := util.ParseTags(values.Tags)
 
 		// Single region (or no region specified) — existing behavior
 		if len(regions) <= 1 {
@@ -501,7 +515,7 @@ func (m Model) runAnalysis(values ConfigValues) tea.Cmd {
 				},
 			}
 
-			recommendations, err := analyzer.AnalyzeRDS(opts)
+			recommendations, err := analyzer.AnalyzeRDS(ctx, opts)
 			close(progressChan)
 			if err != nil {
 				return AnalysisDoneMsg{Err: err}
@@ -516,131 +530,30 @@ func (m Model) runAnalysis(values ConfigValues) tea.Cmd {
 		}
 
 		// Multi-region parallel analysis
-		type regionResult struct {
-			region          string
-			recommendations []types.Recommendation
-			err             error
-		}
-
-		var mu sync.Mutex
-		type progress struct{ current, total int }
-		regionProg := make(map[string]*progress)
-		var allWarnings []string
-
-		results := make([]regionResult, len(regions))
-		var wg sync.WaitGroup
-
-		for i, rgn := range regions {
-			regionProg[rgn] = &progress{}
-			wg.Add(1)
-			go func(idx int, rgn string) {
-				defer wg.Done()
-
-				var optFns []func(*config.LoadOptions) error
-				if values.Profile != "" {
-					optFns = append(optFns, config.WithSharedConfigProfile(values.Profile))
+		allRecs, allWarnings, err := rds.AnalyzeMultiRegion(ctx, rds.MultiRegionOptions{
+			Regions:         regions,
+			Profile:         values.Profile,
+			InstanceTypesURL: values.InstanceTypesURL,
+			Period:          values.Period,
+			Tags:            tags,
+			CPUDownsize:     values.CPUDownsize,
+			CPUUpsize:       values.CPUUpsize,
+			MemUpsize:       values.MemUpsize,
+			Stat:            cwTypes.StatName(values.Stat),
+			PreferNewGen:    values.PreferNewGen,
+			FetchTimeSeries: true,
+			OnProgress: func(current, total int, instanceLabel string) {
+				progressChan <- ProgressMsg{
+					Current:    current,
+					Total:      total,
+					InstanceID: instanceLabel,
 				}
-				optFns = append(optFns, config.WithRegion(rgn))
-
-				cfg, err := config.LoadDefaultConfig(context.Background(), optFns...)
-				if err != nil {
-					results[idx] = regionResult{region: rgn, err: err}
-					return
-				}
-
-				instanceTypesURL := values.InstanceTypesURL
-				analyzer := rds.NewRDSRightSize(
-					&instanceTypesURL,
-					&cfg,
-					values.Period,
-					tags,
-					values.CPUDownsize,
-					values.CPUUpsize,
-					values.MemUpsize,
-					cwTypes.StatName(values.Stat),
-					values.PreferNewGen,
-					rgn,
-				)
-
-				opts := &rds.AnalysisOptions{
-					FetchTimeSeries: true,
-					OnProgress: func(current int, total int, instanceId string) {
-						mu.Lock()
-						rp := regionProg[rgn]
-						rp.current = current
-						rp.total = total
-						var totalSum, currentSum int
-						for _, p := range regionProg {
-							totalSum += p.total
-							currentSum += p.current
-						}
-						mu.Unlock()
-						progressChan <- ProgressMsg{
-							Current:    currentSum,
-							Total:      totalSum,
-							InstanceID: fmt.Sprintf("%s (%s)", instanceId, rgn),
-						}
-					},
-					OnWarning: func(instanceId, msg string) {
-						mu.Lock()
-						allWarnings = append(allWarnings, fmt.Sprintf("%s (%s): %s", instanceId, rgn, msg))
-						mu.Unlock()
-					},
-				}
-
-				recommendations, err := analyzer.AnalyzeRDS(opts)
-				if err != nil {
-					results[idx] = regionResult{region: rgn, err: err}
-					return
-				}
-
-				// Stamp region on each recommendation
-				for j := range recommendations {
-					recommendations[j].Region = rgn
-				}
-				results[idx] = regionResult{region: rgn, recommendations: recommendations}
-			}(i, rgn)
-		}
-
-		wg.Wait()
-		close(progressChan)
-
-		// Merge results, collect errors
-		allRecs := make([]types.Recommendation, 0)
-		var errs []string
-		for _, r := range results {
-			if r.err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %v", r.region, r.err))
-				continue
-			}
-			allRecs = append(allRecs, r.recommendations...)
-		}
-
-		if len(allRecs) == 0 && len(errs) > 0 {
-			return AnalysisDoneMsg{Err: fmt.Errorf("all regions failed:\n%s", strings.Join(errs, "\n"))}
-		}
-
-		// Sort: cluster members grouped, then by instance ID
-		sort.SliceStable(allRecs, func(i, j int) bool {
-			ci := allRecs[i].DBClusterIdentifier
-			cj := allRecs[j].DBClusterIdentifier
-			if ci != nil && cj == nil {
-				return true
-			}
-			if ci == nil && cj != nil {
-				return false
-			}
-			if ci != nil && cj != nil && *ci != *cj {
-				return *ci < *cj
-			}
-			ii := allRecs[i].DBInstanceIdentifier
-			ij := allRecs[j].DBInstanceIdentifier
-			if ii != nil && ij != nil {
-				return *ii < *ij
-			}
-			return false
+			},
 		})
-
+		close(progressChan)
+		if err != nil {
+			return AnalysisDoneMsg{Err: err}
+		}
 		return AnalysisDoneMsg{Recommendations: allRecs, Warnings: allWarnings}
 	}
 }
@@ -655,35 +568,17 @@ func waitForProgress(ch chan ProgressMsg) tea.Cmd {
 	}
 }
 
-func parseTags(tags string) map[string]string {
-	tagsEntries := strings.Split(tags, ",")
-	tagsMap := make(map[string]string)
-
-	if len(tagsEntries) > 0 {
-		for _, e := range tagsEntries {
-			if len(strings.TrimSpace(e)) > 0 {
-				parts := strings.Split(e, "=")
-				if len(parts) == 2 {
-					tagsMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-				}
-			}
+// waitForStatus blocks until the next status string is available on ch,
+// then wraps it in a GenerateStatusMsg. Returns nil when the channel is closed
+// (signals the generator has finished and no further re-chaining is needed).
+func waitForStatus(ch chan string) tea.Cmd {
+	return func() tea.Msg {
+		status, ok := <-ch
+		if !ok {
+			return nil
 		}
+		return GenerateStatusMsg{Status: status}
 	}
-
-	return tagsMap
-}
-
-// splitRegions splits a comma-separated region string into a slice,
-// trimming whitespace and filtering empty entries.
-func splitRegions(s string) []string {
-	var regions []string
-	for _, r := range strings.Split(s, ",") {
-		r = strings.TrimSpace(r)
-		if r != "" {
-			regions = append(regions, r)
-		}
-	}
-	return regions
 }
 
 // Run starts the TUI application.

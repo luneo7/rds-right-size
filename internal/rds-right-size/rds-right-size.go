@@ -1,6 +1,7 @@
 package rds_right_size
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +22,7 @@ import (
 	"github.com/luneo7/rds-right-size/internal/rds"
 	"github.com/luneo7/rds-right-size/internal/rds-right-size/types"
 	rdsTypes "github.com/luneo7/rds-right-size/internal/rds/types"
+	"github.com/luneo7/rds-right-size/internal/util"
 )
 
 const (
@@ -166,55 +167,7 @@ func parseInstanceFamily(dbInstanceClass string) (instanceFamilyInfo, bool) {
 	}, true
 }
 
-// compareEngineVersions compares two engine version strings numerically.
-// It extracts numeric segments from each version (skipping non-numeric parts like "mysql_aurora")
-// and compares them segment-by-segment.
-// Returns -1 if a < b, 0 if a == b, 1 if a > b.
-//
-// Examples:
-//   - "8.0.mysql_aurora.3.04.0" → segments [8, 0, 3, 4, 0]
-//   - "15.4" → segments [15, 4]
-//   - "15.10" → segments [15, 10]
-func compareEngineVersions(a, b string) int {
-	aSegs := extractVersionSegments(a)
-	bSegs := extractVersionSegments(b)
 
-	maxLen := len(aSegs)
-	if len(bSegs) > maxLen {
-		maxLen = len(bSegs)
-	}
-
-	for i := 0; i < maxLen; i++ {
-		aVal := 0
-		if i < len(aSegs) {
-			aVal = aSegs[i]
-		}
-		bVal := 0
-		if i < len(bSegs) {
-			bVal = bSegs[i]
-		}
-		if aVal < bVal {
-			return -1
-		}
-		if aVal > bVal {
-			return 1
-		}
-	}
-	return 0
-}
-
-// extractVersionSegments splits a version string by "." and returns only the numeric
-// segments as integers. Non-numeric parts (like "mysql_aurora") are skipped.
-func extractVersionSegments(version string) []int {
-	parts := strings.Split(version, ".")
-	var segments []int
-	for _, p := range parts {
-		if n, err := strconv.Atoi(p); err == nil {
-			segments = append(segments, n)
-		}
-	}
-	return segments
-}
 
 // upgradeGeneration attempts to find a newer-generation instance with the same
 // family prefix, architecture suffix, and size in the loaded instance types.
@@ -265,7 +218,7 @@ func (r *RDSRightSize) upgradeGeneration(targetClass string, engine *string, eng
 
 		// Must be compatible with the user's engine version
 		if candidateProps.MinEngineVersion != "" && engineVersion != "" {
-			if compareEngineVersions(engineVersion, candidateProps.MinEngineVersion) < 0 {
+			if util.CompareVersions(engineVersion, candidateProps.MinEngineVersion) < 0 {
 				continue
 			}
 		}
@@ -286,6 +239,7 @@ func (r *RDSRightSize) upgradeGeneration(targetClass string, engine *string, eng
 // If successful, it updates the recommendation's target fields and recalculates cost diff.
 // For downscale recommendations, it also re-validates projected CPU and bandwidth constraints.
 func (r *RDSRightSize) tryUpgradeRecommendation(
+	ctx context.Context,
 	rec *types.Recommendation,
 	currentProps *types.InstanceProperties,
 	instance *rdsTypes.Instance,
@@ -349,7 +303,7 @@ func (r *RDSRightSize) tryUpgradeRecommendation(
 	rec.MaxConnectionsAdjustRequired = false
 	rec.PeakConnections = nil
 	if rec.Recommendation == types.DownScale && peakConns != nil {
-		effectiveMax := r.getEffectiveMaxConnections(instance, &newPropsCopy)
+		effectiveMax := r.getEffectiveMaxConnections(ctx, instance, &newPropsCopy)
 		if effectiveMax != nil && *peakConns >= float64(*effectiveMax) {
 			rec.MaxConnectionsAdjustRequired = true
 			rec.PeakConnections = peakConns
@@ -365,7 +319,7 @@ func (r *RDSRightSize) DoAnalyzeRDS() error {
 			fmt.Fprintf(os.Stderr, "Warning: skipping instance %s: %s\n", instanceId, msg)
 		},
 	}
-	recommendations, err := r.AnalyzeRDS(opts)
+	recommendations, err := r.AnalyzeRDS(context.Background(), opts)
 	if err != nil {
 		return err
 	}
@@ -380,7 +334,7 @@ func (r *RDSRightSize) DoAnalyzeRDS() error {
 
 // AnalyzeRDS performs the core analysis and returns recommendations as data.
 // If opts is nil, defaults are used (no time-series, no progress callback).
-func (r *RDSRightSize) AnalyzeRDS(opts *AnalysisOptions) ([]types.Recommendation, error) {
+func (r *RDSRightSize) AnalyzeRDS(ctx context.Context, opts *AnalysisOptions) ([]types.Recommendation, error) {
 	if opts == nil {
 		opts = &AnalysisOptions{}
 	}
@@ -392,7 +346,7 @@ func (r *RDSRightSize) AnalyzeRDS(opts *AnalysisOptions) ([]types.Recommendation
 	}
 
 	recommendations := make([]types.Recommendation, 0)
-	instances, err := r.rds.GetInstances()
+	instances, err := r.rds.GetInstances(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -416,7 +370,7 @@ func (r *RDSRightSize) AnalyzeRDS(opts *AnalysisOptions) ([]types.Recommendation
 			opts.OnProgress(i+1, total, *instance.DBInstanceIdentifier)
 		}
 
-		metrics, err := r.getMetrics(&instance)
+		metrics, err := r.getMetrics(ctx, &instance)
 		if err != nil {
 			return nil, err
 		}
@@ -424,7 +378,7 @@ func (r *RDSRightSize) AnalyzeRDS(opts *AnalysisOptions) ([]types.Recommendation
 		// Optionally fetch time-series metrics for graphs
 		var tsMetrics *cwTypes.TimeSeriesMetrics
 		if opts.FetchTimeSeries {
-			tsMetrics, err = r.cloudWatch.GetTimeSeriesMetrics(instance.DBInstanceIdentifier, r.period, r.statistic)
+			tsMetrics, err = r.cloudWatch.GetTimeSeriesMetrics(ctx, instance.DBInstanceIdentifier, r.period, r.statistic)
 			if err != nil {
 				// Non-fatal: we can still analyze without time-series
 				tsMetrics = nil
@@ -491,6 +445,7 @@ func (r *RDSRightSize) AnalyzeRDS(opts *AnalysisOptions) ([]types.Recommendation
 					// Try upgrading to a newer instance generation
 					if r.preferNewGen {
 						r.tryUpgradeRecommendation(
+							ctx,
 							&recommendations[len(recommendations)-1],
 							&instanceProperties, &instance, cpuValue, nil, peakConns,
 						)
@@ -526,6 +481,7 @@ func (r *RDSRightSize) AnalyzeRDS(opts *AnalysisOptions) ([]types.Recommendation
 						// Try upgrading to a newer instance generation
 						if r.preferNewGen {
 							r.tryUpgradeRecommendation(
+								ctx,
 								&recommendations[len(recommendations)-1],
 								&instanceProperties, &instance, cpuValue, nil, peakConns,
 							)
@@ -594,7 +550,7 @@ func (r *RDSRightSize) AnalyzeRDS(opts *AnalysisOptions) ([]types.Recommendation
 
 							// Soft constraint: connections warning
 							if peakConns != nil {
-								effectiveMax := r.getEffectiveMaxConnections(&instance, bestDownInstance)
+								effectiveMax := r.getEffectiveMaxConnections(ctx, &instance, bestDownInstance)
 								if effectiveMax != nil && *peakConns >= float64(*effectiveMax) {
 									rec.MaxConnectionsAdjustRequired = true
 									rec.PeakConnections = peakConns
@@ -606,6 +562,7 @@ func (r *RDSRightSize) AnalyzeRDS(opts *AnalysisOptions) ([]types.Recommendation
 							// Try upgrading to a newer instance generation
 							if r.preferNewGen {
 								r.tryUpgradeRecommendation(
+									ctx,
 									&recommendations[len(recommendations)-1],
 									&instanceProperties, &instance, cpuValue, bandwidthUtilization.Total, peakConns,
 								)
@@ -642,28 +599,10 @@ func (r *RDSRightSize) AnalyzeRDS(opts *AnalysisOptions) ([]types.Recommendation
 	}
 
 	// Equalize recommendations within clusters
-	recommendations = r.equalizeClusterRecommendations(recommendations, clusterData)
+	recommendations = r.equalizeClusterRecommendations(ctx, recommendations, clusterData)
 
 	// Sort recommendations: cluster members grouped together, then by instance ID
-	sort.SliceStable(recommendations, func(i, j int) bool {
-		ci := recommendations[i].DBClusterIdentifier
-		cj := recommendations[j].DBClusterIdentifier
-		if ci != nil && cj == nil {
-			return true
-		}
-		if ci == nil && cj != nil {
-			return false
-		}
-		if ci != nil && cj != nil && *ci != *cj {
-			return *ci < *cj
-		}
-		ii := recommendations[i].DBInstanceIdentifier
-		ij := recommendations[j].DBInstanceIdentifier
-		if ii != nil && ij != nil {
-			return *ii < *ij
-		}
-		return false
-	})
+	SortRecommendations(recommendations)
 
 	// Compute projected CPU for all non-Terminate recommendations
 	for i := range recommendations {
@@ -693,6 +632,7 @@ func (r *RDSRightSize) AnalyzeRDS(opts *AnalysisOptions) ([]types.Recommendation
 //   - Optimized instances (no recommendation): their current instance type
 //   - TERMINATE instances (in non-all-terminate clusters): their current instance type
 func (r *RDSRightSize) equalizeClusterRecommendations(
+	ctx context.Context,
 	recommendations []types.Recommendation,
 	clusterData map[string][]clusterInstanceInfo,
 ) []types.Recommendation {
@@ -868,7 +808,7 @@ func (r *RDSRightSize) equalizeClusterRecommendations(
 				rec.MaxConnectionsAdjustRequired = false
 				rec.PeakConnections = nil
 				if m.peakConns != nil && recType == types.DownScale {
-					effectiveMax := r.getEffectiveMaxConnections(&m.instance, &targetPropsCopy)
+					effectiveMax := r.getEffectiveMaxConnections(ctx, &m.instance, &targetPropsCopy)
 					if effectiveMax != nil && *m.peakConns >= float64(*effectiveMax) {
 						rec.MaxConnectionsAdjustRequired = true
 						rec.PeakConnections = m.peakConns
@@ -891,7 +831,7 @@ func (r *RDSRightSize) equalizeClusterRecommendations(
 
 				// Connections warning for downscale
 				if m.peakConns != nil && recType == types.DownScale {
-					effectiveMax := r.getEffectiveMaxConnections(&m.instance, &targetPropsCopy)
+					effectiveMax := r.getEffectiveMaxConnections(ctx, &m.instance, &targetPropsCopy)
 					if effectiveMax != nil && *m.peakConns >= float64(*effectiveMax) {
 						rec.MaxConnectionsAdjustRequired = true
 						rec.PeakConnections = m.peakConns
@@ -990,6 +930,30 @@ func CalculateRegionalCostBreakdown(recommendations []types.Recommendation) (map
 	return byRegion, regions
 }
 
+// SortRecommendations sorts recommendations so Aurora cluster members are grouped together
+// and then ordered by instance ID within each group.
+func SortRecommendations(recs []types.Recommendation) {
+	sort.SliceStable(recs, func(i, j int) bool {
+		ci := recs[i].DBClusterIdentifier
+		cj := recs[j].DBClusterIdentifier
+		if ci != nil && cj == nil {
+			return true
+		}
+		if ci == nil && cj != nil {
+			return false
+		}
+		if ci != nil && cj != nil && *ci != *cj {
+			return *ci < *cj
+		}
+		ii := recs[i].DBInstanceIdentifier
+		ij := recs[j].DBInstanceIdentifier
+		if ii != nil && ij != nil {
+			return *ii < *ij
+		}
+		return false
+	})
+}
+
 // WriteResultsCLI prints cost summary to stdout and writes the JSON file.
 // This is used by both single-region DoAnalyzeRDS and multi-region CLI orchestration.
 func WriteResultsCLI(recommendations []types.Recommendation) error {
@@ -1007,7 +971,7 @@ func WriteRecommendationsJSON(recommendations []types.Recommendation) (string, e
 		return "", err
 	}
 
-	const layout = "2006-01-02 15:04:05"
+	const layout = "2006-01-02_15-04-05"
 	t := time.Now()
 	filename := "recommendations-" + t.Format(layout) + ".json"
 	err = os.WriteFile(filename, data, 0644)
@@ -1074,12 +1038,6 @@ func writeApproximateCostDifference(recommendations []types.Recommendation) {
 	}
 }
 
-func (r *RDSRightSize) getFilenameWithDate() string {
-	const layout = "2006-01-02 15:04:05"
-	t := time.Now()
-	return "recommendations-" + t.Format(layout) + ".json"
-}
-
 func (r *RDSRightSize) hasRequiredTags(instance *rdsTypes.Instance) *bool {
 	returnValue := true
 
@@ -1143,8 +1101,8 @@ func (r *RDSRightSize) getMemoryUtilization(metrics *cwTypes.Metrics, instancePr
 	return &returnValue, nil
 }
 
-func (r *RDSRightSize) getMetrics(instance *rdsTypes.Instance) (*cwTypes.Metrics, error) {
-	return r.cloudWatch.GetMetrics(instance.DBInstanceIdentifier, r.period, r.statistic)
+func (r *RDSRightSize) getMetrics(ctx context.Context, instance *rdsTypes.Instance) (*cwTypes.Metrics, error) {
+	return r.cloudWatch.GetMetrics(ctx, instance.DBInstanceIdentifier, r.period, r.statistic)
 }
 
 func (r *RDSRightSize) getBandwidthUtilization(metrics *cwTypes.Metrics, instanceProperties *types.InstanceProperties) (*types.BandwidthUtilization, error) {
@@ -1236,7 +1194,7 @@ func (r *RDSRightSize) getPeakConnections(metrics *cwTypes.Metrics) *float64 {
 
 // getEffectiveMaxConnections determines the effective max_connections limit for the target instance.
 // It tries the parameter group API first (cached), falling back to the JSON-defined value.
-func (r *RDSRightSize) getEffectiveMaxConnections(instance *rdsTypes.Instance, targetProperties *types.InstanceProperties) *int64 {
+func (r *RDSRightSize) getEffectiveMaxConnections(ctx context.Context, instance *rdsTypes.Instance, targetProperties *types.InstanceProperties) *int64 {
 	targetMax := targetProperties.MaxConnections
 
 	// Try to get the current instance's configured max_connections from its parameter group
@@ -1252,7 +1210,7 @@ func (r *RDSRightSize) getEffectiveMaxConnections(instance *rdsTypes.Instance, t
 		}
 
 		// Query the API
-		apiMax, err := r.rds.GetMaxConnections(instance.DBParameterGroupName)
+		apiMax, err := r.rds.GetMaxConnections(ctx, instance.DBParameterGroupName)
 		r.maxConnCache[pgName] = apiMax // cache even nil results
 
 		if err == nil && apiMax != nil {

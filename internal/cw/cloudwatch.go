@@ -37,7 +37,7 @@ func NewCloudWatch(awsConfig *aws.Config) *CloudWatch {
 	}
 }
 
-func (c *CloudWatch) GetMetrics(dbInstanceId *string, periodInDays int, statistic types.StatName) (*types.Metrics, error) {
+func (c *CloudWatch) GetMetrics(ctx context.Context, dbInstanceId *string, periodInDays int, statistic types.StatName) (*types.Metrics, error) {
 
 	endTime := time.Now().UTC().Truncate(time.Hour)
 	startTime := endTime.AddDate(0, 0, (periodInDays)*-1)
@@ -136,7 +136,7 @@ func (c *CloudWatch) GetMetrics(dbInstanceId *string, periodInDays int, statisti
 		},
 	}
 
-	output, err := c.cwClient.GetMetricData(context.Background(), input)
+	output, err := c.cwClient.GetMetricData(ctx, input)
 
 	if err != nil {
 		return nil, err
@@ -176,7 +176,7 @@ func (c *CloudWatch) GetMetrics(dbInstanceId *string, periodInDays int, statisti
 	return &m, nil
 }
 
-func (c *CloudWatch) GetTimeSeriesMetrics(dbInstanceId *string, periodInDays int, statistic types.StatName) (*types.TimeSeriesMetrics, error) {
+func (c *CloudWatch) GetTimeSeriesMetrics(ctx context.Context, dbInstanceId *string, periodInDays int, statistic types.StatName) (*types.TimeSeriesMetrics, error) {
 	endTime := time.Now().UTC().Truncate(time.Hour)
 	startTime := endTime.AddDate(0, 0, periodInDays*-1)
 
@@ -282,7 +282,7 @@ func (c *CloudWatch) GetTimeSeriesMetrics(dbInstanceId *string, periodInDays int
 		if nextToken != nil {
 			input.NextToken = nextToken
 		}
-		return c.cwClient.GetMetricData(context.Background(), input)
+		return c.cwClient.GetMetricData(ctx, input)
 	}
 
 	var nextToken *string

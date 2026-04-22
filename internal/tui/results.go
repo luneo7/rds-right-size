@@ -16,6 +16,10 @@ const (
 	breakpointMedium = 120
 	breakpointNarrow = 100
 	breakpointTight  = 80
+
+	// cursorPrefixWidth is the number of characters reserved for the cursor/indent prefix
+	// on each row (either "> " when selected or "  " otherwise).
+	cursorPrefixWidth = 2
 )
 
 type columnLayout struct {
@@ -87,7 +91,7 @@ func computeColumns(width int) columnLayout {
 		}
 	} else if width >= breakpointNarrow {
 		// Narrow: hide Region, Cluster, Engine, Proj CPU
-		reasonW := width - 26 - 18 - 12 - 18 - 10 - 14 - 2
+		reasonW := width - 26 - 18 - 12 - 18 - 14 - 2
 		if reasonW < 10 {
 			reasonW = 10
 		}
@@ -96,14 +100,14 @@ func computeColumns(width int) columnLayout {
 			currentW:    18,
 			actionW:     12,
 			targetW:     18,
-			projCpuW:    10,
 			reasonW:     reasonW,
 			costW:       14,
 			showRegion:  false,
+			showCluster: false,
 			showEngine:  false,
 			showReason:  true,
 			showCurrent: true,
-			showProjCpu: true,
+			showProjCpu: false,
 		}
 	} else if width >= breakpointTight {
 		// Tight: Instance, Current, Action, Recommended, Cost
@@ -145,11 +149,13 @@ type ResultsModel struct {
 	exportErr       string
 }
 
-func NewResultsModel(recommendations []types.Recommendation) ResultsModel {
+func NewResultsModel(recommendations []types.Recommendation, width, height int) ResultsModel {
 	return ResultsModel{
 		recommendations: recommendations,
 		cursor:          0,
 		scrollOffset:    0,
+		width:           width,
+		height:          height,
 	}
 }
 
@@ -392,7 +398,7 @@ func (m ResultsModel) renderHeader() string {
 	}
 	cols = append(cols, tableHeaderStyle.Width(layout.costW).Render("Cost/mo"))
 
-	return "  " + lipgloss.JoinHorizontal(lipgloss.Top, cols...)
+	return strings.Repeat(" ", cursorPrefixWidth) + lipgloss.JoinHorizontal(lipgloss.Top, cols...)
 }
 
 func (m ResultsModel) renderRow(rec types.Recommendation, selected bool) string {
@@ -402,7 +408,7 @@ func (m ResultsModel) renderRow(rec types.Recommendation, selected bool) string 
 	if rec.DBInstanceIdentifier != nil {
 		instanceID = *rec.DBInstanceIdentifier
 	}
-	maxInstLen := layout.instanceW - 2
+	maxInstLen := layout.instanceW - cursorPrefixWidth
 	if maxInstLen < 4 {
 		maxInstLen = 4
 	}
@@ -510,7 +516,7 @@ func (m ResultsModel) renderRow(rec types.Recommendation, selected bool) string 
 	}
 	cols = append(cols, baseStyle.Width(layout.costW).Render(costDiff))
 
-	cursor := "  "
+	cursor := strings.Repeat(" ", cursorPrefixWidth)
 	if selected {
 		cursor = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
 	}

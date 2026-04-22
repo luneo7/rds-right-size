@@ -6,16 +6,13 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sort"
-	"strings"
-	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	cwTypes "github.com/luneo7/rds-right-size/internal/cw/types"
 	"github.com/luneo7/rds-right-size/internal/generator"
 	rds "github.com/luneo7/rds-right-size/internal/rds-right-size"
-	rdsTypes "github.com/luneo7/rds-right-size/internal/rds-right-size/types"
 	"github.com/luneo7/rds-right-size/internal/tui"
+	"github.com/luneo7/rds-right-size/internal/util"
 )
 
 const (
@@ -102,7 +99,7 @@ func runAnalyze() {
 	}
 
 	// Original CLI behavior
-	regions := splitRegions(region)
+	regions := util.SplitRegions(region)
 
 	if len(regions) <= 1 {
 		// Single region — existing behavior
@@ -123,7 +120,7 @@ func runAnalyze() {
 			os.Exit(1)
 		}
 
-		err = rds.NewRDSRightSize(&instanceTypesUrl, &cfg, period, parseTags(tags), cpuDownsize, cpuUpsize, memUpsize, cwTypes.StatName(statName), preferNewGen, region).DoAnalyzeRDS()
+		err = rds.NewRDSRightSize(&instanceTypesUrl, &cfg, period, util.ParseTags(tags), cpuDownsize, cpuUpsize, memUpsize, cwTypes.StatName(statName), preferNewGen, region).DoAnalyzeRDS()
 
 		if err != nil {
 			log.Fatal(err)
@@ -132,88 +129,27 @@ func runAnalyze() {
 	}
 
 	// Multi-region parallel analysis
-	type regionResult struct {
-		region          string
-		recommendations []rdsTypes.Recommendation
-		err             error
-	}
-
-	results := make([]regionResult, len(regions))
-	var wg sync.WaitGroup
-
-	for i, rgn := range regions {
-		wg.Add(1)
-		go func(idx int, rgn string) {
-			defer wg.Done()
-
-			var optFns []func(*config.LoadOptions) error
-			if profile != "" {
-				optFns = append(optFns, config.WithSharedConfigProfile(profile))
-			}
-			optFns = append(optFns, config.WithRegion(rgn))
-
-			cfg, err := config.LoadDefaultConfig(context.Background(), optFns...)
-			if err != nil {
-				results[idx] = regionResult{region: rgn, err: err}
-				return
-			}
-
-			instanceTypesURL := instanceTypesUrl
-			analyzer := rds.NewRDSRightSize(&instanceTypesURL, &cfg, period, parseTags(tags), cpuDownsize, cpuUpsize, memUpsize, cwTypes.StatName(statName), preferNewGen, rgn)
-			recommendations, err := analyzer.AnalyzeRDS(&rds.AnalysisOptions{
-				OnWarning: func(instanceId, msg string) {
-					fmt.Fprintf(os.Stderr, "Warning: skipping instance %s (%s): %s\n", instanceId, rgn, msg)
-				},
-			})
-			if err != nil {
-				results[idx] = regionResult{region: rgn, err: err}
-				return
-			}
-
-			for j := range recommendations {
-				recommendations[j].Region = rgn
-			}
-			results[idx] = regionResult{region: rgn, recommendations: recommendations}
-		}(i, rgn)
-	}
-
-	wg.Wait()
-
-	allRecs := make([]rdsTypes.Recommendation, 0)
-	var errs []string
-	for _, r := range results {
-		if r.err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", r.region, r.err))
-			fmt.Fprintf(os.Stderr, "Warning: %s analysis failed: %v\n", r.region, r.err)
-			continue
-		}
-		allRecs = append(allRecs, r.recommendations...)
-	}
-
-	if len(allRecs) == 0 && len(errs) > 0 {
-		log.Fatalf("All regions failed:\n%s", strings.Join(errs, "\n"))
-	}
-
-	// Sort: cluster members grouped, then by instance ID
-	sort.SliceStable(allRecs, func(i, j int) bool {
-		ci := allRecs[i].DBClusterIdentifier
-		cj := allRecs[j].DBClusterIdentifier
-		if ci != nil && cj == nil {
-			return true
-		}
-		if ci == nil && cj != nil {
-			return false
-		}
-		if ci != nil && cj != nil && *ci != *cj {
-			return *ci < *cj
-		}
-		ii := allRecs[i].DBInstanceIdentifier
-		ij := allRecs[j].DBInstanceIdentifier
-		if ii != nil && ij != nil {
-			return *ii < *ij
-		}
-		return false
+	allRecs, _, err := rds.AnalyzeMultiRegion(context.Background(), rds.MultiRegionOptions{
+		Regions:          regions,
+		Profile:          profile,
+		InstanceTypesURL: instanceTypesUrl,
+		Period:           period,
+		Tags:             util.ParseTags(tags),
+		CPUDownsize:      cpuDownsize,
+		CPUUpsize:        cpuUpsize,
+		MemUpsize:        memUpsize,
+		Stat:             cwTypes.StatName(statName),
+		PreferNewGen:     preferNewGen,
+		OnWarning: func(instanceLabel, msg string) {
+			fmt.Fprintf(os.Stderr, "Warning: skipping instance %s: %s\n", instanceLabel, msg)
+		},
+		OnRegionError: func(region string, err error) {
+			fmt.Fprintf(os.Stderr, "Warning: %s analysis failed: %v\n", region, err)
+		},
 	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	if err := rds.WriteResultsCLI(allRecs); err != nil {
 		log.Fatal(err)
@@ -291,34 +227,4 @@ func runGenerateTypes() {
 	}
 }
 
-func parseTags(tags string) map[string]string {
-	tagsEntries := strings.Split(tags, ",")
 
-	tagsMap := make(map[string]string)
-
-	if len(tagsEntries) > 0 {
-		for _, e := range tagsEntries {
-			if len(strings.TrimSpace(e)) > 0 {
-				parts := strings.Split(e, "=")
-				if len(parts) == 2 {
-					tagsMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-				}
-			}
-		}
-	}
-
-	return tagsMap
-}
-
-// splitRegions splits a comma-separated region string into a slice,
-// trimming whitespace and filtering empty entries.
-func splitRegions(s string) []string {
-	var regions []string
-	for _, r := range strings.Split(s, ",") {
-		r = strings.TrimSpace(r)
-		if r != "" {
-			regions = append(regions, r)
-		}
-	}
-	return regions
-}
