@@ -226,5 +226,3 @@ func runGenerateTypes() {
 		os.Exit(1)
 	}
 }
-
-

@@ -167,8 +167,6 @@ func parseInstanceFamily(dbInstanceClass string) (instanceFamilyInfo, bool) {
 	}, true
 }
 
-
-
 // upgradeGeneration attempts to find a newer-generation instance with the same
 // family prefix, architecture suffix, and size in the loaded instance types.
 // Strict suffix matching ensures no architecture change (e.g., r6g → r7g only, never r6g → r7).
@@ -299,14 +297,18 @@ func (r *RDSRightSize) tryUpgradeRecommendation(
 	rec.TargetInstanceProperties = &newPropsCopy
 	rec.MonthlyApproximatePriceDiff = Float64((newProps.GetPrice(r.region) - currentProps.GetPrice(r.region)) * hours_month)
 
-	// Re-check connections soft constraint for downscale
-	rec.MaxConnectionsAdjustRequired = false
-	rec.PeakConnections = nil
-	if rec.Recommendation == types.DownScale && peakConns != nil {
-		effectiveMax := r.getEffectiveMaxConnections(ctx, instance, &newPropsCopy)
-		if effectiveMax != nil && *peakConns >= float64(*effectiveMax) {
-			rec.MaxConnectionsAdjustRequired = true
-			rec.PeakConnections = peakConns
+	// Re-check connections soft constraint for downscale.
+	// Only reset/re-evaluate when peakConns is provided; when nil (e.g., post-equalization
+	// gen upgrade for standalone recs), preserve the existing connections state.
+	if peakConns != nil {
+		rec.MaxConnectionsAdjustRequired = false
+		rec.PeakConnections = nil
+		if rec.Recommendation == types.DownScale {
+			effectiveMax := r.getEffectiveMaxConnections(ctx, instance, &newPropsCopy)
+			if effectiveMax != nil && *peakConns >= float64(*effectiveMax) {
+				rec.MaxConnectionsAdjustRequired = true
+				rec.PeakConnections = peakConns
+			}
 		}
 	}
 }
@@ -427,29 +429,20 @@ func (r *RDSRightSize) AnalyzeRDS(ctx context.Context, opts *AnalysisOptions) ([
 					continue
 				}
 
-			if *memoryUtilization.UnderProvisioned && instanceProperties.Up != nil {
-				upInstance, _ := r.lookupInstanceProperties(*instanceProperties.Up, instance.Engine)
-				upName := stripEnginePrefix(*instanceProperties.Up)
-				recommendations = append(recommendations, types.Recommendation{
-					Instance:                    instance,
-					Recommendation:              types.UpScale,
-					Reason:                      types.MemoryUnderProvisionedReason,
-					RecommendedInstanceType:     &upName,
+				if *memoryUtilization.UnderProvisioned && instanceProperties.Up != nil {
+					upInstance, _ := r.lookupInstanceProperties(*instanceProperties.Up, instance.Engine)
+					upName := stripEnginePrefix(*instanceProperties.Up)
+					recommendations = append(recommendations, types.Recommendation{
+						Instance:                    instance,
+						Recommendation:              types.UpScale,
+						Reason:                      types.MemoryUnderProvisionedReason,
+						RecommendedInstanceType:     &upName,
 						MetricValue:                 memoryUtilization.Value,
 						MonthlyApproximatePriceDiff: Float64((upInstance.GetPrice(r.region) - instanceProperties.GetPrice(r.region)) * hours_month),
 						CurrentInstanceProperties:   &instanceProperties,
 						TargetInstanceProperties:    &upInstance,
 						TimeSeriesMetrics:           tsMetrics,
 					})
-
-					// Try upgrading to a newer instance generation
-					if r.preferNewGen {
-						r.tryUpgradeRecommendation(
-							ctx,
-							&recommendations[len(recommendations)-1],
-							&instanceProperties, &instance, cpuValue, nil, peakConns,
-						)
-					}
 				} else {
 					cpuUtilization, err := r.getCPUUtilization(metrics)
 					if err != nil {
@@ -463,29 +456,20 @@ func (r *RDSRightSize) AnalyzeRDS(ctx context.Context, opts *AnalysisOptions) ([
 						continue
 					}
 
-				if cpuUtilization.Status == types.CPUUnderProvisioned && instanceProperties.Up != nil {
-					upInstance, _ := r.lookupInstanceProperties(*instanceProperties.Up, instance.Engine)
-					cpuUpName := stripEnginePrefix(*instanceProperties.Up)
-					recommendations = append(recommendations, types.Recommendation{
-						Instance:                    instance,
-						Recommendation:              types.UpScale,
-						Reason:                      types.CPUUnderProvisionedReason,
-						RecommendedInstanceType:     &cpuUpName,
+					if cpuUtilization.Status == types.CPUUnderProvisioned && instanceProperties.Up != nil {
+						upInstance, _ := r.lookupInstanceProperties(*instanceProperties.Up, instance.Engine)
+						cpuUpName := stripEnginePrefix(*instanceProperties.Up)
+						recommendations = append(recommendations, types.Recommendation{
+							Instance:                    instance,
+							Recommendation:              types.UpScale,
+							Reason:                      types.CPUUnderProvisionedReason,
+							RecommendedInstanceType:     &cpuUpName,
 							MetricValue:                 cpuUtilization.Value,
 							MonthlyApproximatePriceDiff: Float64((upInstance.GetPrice(r.region) - instanceProperties.GetPrice(r.region)) * hours_month),
 							CurrentInstanceProperties:   &instanceProperties,
 							TargetInstanceProperties:    &upInstance,
 							TimeSeriesMetrics:           tsMetrics,
 						})
-
-						// Try upgrading to a newer instance generation
-						if r.preferNewGen {
-							r.tryUpgradeRecommendation(
-								ctx,
-								&recommendations[len(recommendations)-1],
-								&instanceProperties, &instance, cpuValue, nil, peakConns,
-							)
-						}
 					} else if cpuUtilization.Status == types.CPUOverProvisioned && bandwidthUtilization.Status != types.BandwidthUnderProvisioned && instanceProperties.Down != nil {
 						// Walk down the instance chain to find the optimal (smallest) downscale target
 						// where projected CPU stays within acceptable bounds.
@@ -520,11 +504,11 @@ func (r *RDSRightSize) AnalyzeRDS(ctx context.Context, opts *AnalysisOptions) ([
 								break
 							}
 
-						// Valid candidate — record as best so far
-						candidateCopy := candidate
-						strippedCandidate := stripEnginePrefix(*candidateName)
-						bestDown = &strippedCandidate
-						bestDownInstance = &candidateCopy
+							// Valid candidate — record as best so far
+							candidateCopy := candidate
+							strippedCandidate := stripEnginePrefix(*candidateName)
+							bestDown = &strippedCandidate
+							bestDownInstance = &candidateCopy
 
 							// If projected CPU is in the optimized zone, this is the ideal target
 							if projectedCPU >= r.cpuDownsizeThreshold {
@@ -558,15 +542,6 @@ func (r *RDSRightSize) AnalyzeRDS(ctx context.Context, opts *AnalysisOptions) ([
 							}
 
 							recommendations = append(recommendations, rec)
-
-							// Try upgrading to a newer instance generation
-							if r.preferNewGen {
-								r.tryUpgradeRecommendation(
-									ctx,
-									&recommendations[len(recommendations)-1],
-									&instanceProperties, &instance, cpuValue, bandwidthUtilization.Total, peakConns,
-								)
-							}
 						}
 					}
 				}
@@ -600,6 +575,22 @@ func (r *RDSRightSize) AnalyzeRDS(ctx context.Context, opts *AnalysisOptions) ([
 
 	// Equalize recommendations within clusters
 	recommendations = r.equalizeClusterRecommendations(ctx, recommendations, clusterData)
+
+	// Upgrade non-cluster recommendations to newer instance generations.
+	// Cluster recs are already gen-upgraded inside equalizeClusterRecommendations,
+	// so we skip ClusterEqualized recs here to avoid double-upgrading.
+	// We pass nil for bandwidthTotal — safe because upgradeGeneration matches the
+	// same size (e.g., r6g.xlarge → r7g.xlarge) and newer gens have equal or better
+	// bandwidth. rec.PeakConnections is used for connections re-check when available.
+	if r.preferNewGen {
+		for i := range recommendations {
+			rec := &recommendations[i]
+			if rec.Recommendation == types.Terminate || rec.CurrentInstanceProperties == nil || rec.ClusterEqualized {
+				continue
+			}
+			r.tryUpgradeRecommendation(ctx, rec, rec.CurrentInstanceProperties, &rec.Instance, rec.MetricValue, nil, rec.PeakConnections)
+		}
+	}
 
 	// Sort recommendations: cluster members grouped together, then by instance ID
 	SortRecommendations(recommendations)
@@ -708,21 +699,24 @@ func (r *RDSRightSize) equalizeClusterRecommendations(
 			continue
 		}
 
-		// Only upgrade generation if at least one member has a scaling recommendation.
-		// Don't create generation-only changes for clusters where all instances are optimized.
-		hasScalingRec := false
+		// Only upgrade generation if the pre-upgrade cluster target actually requires
+		// changes for at least one member. This prevents spurious generation-only
+		// recommendations when equalization would otherwise be a no-op (e.g., all
+		// members are already at the cluster target size).
+		needsEqualization := false
 		for _, m := range members {
-			if m.recIndex >= 0 {
-				rec := recommendations[m.recIndex]
-				if rec.Recommendation == types.UpScale || rec.Recommendation == types.DownScale {
-					hasScalingRec = true
-					break
-				}
+			ct := ""
+			if m.instance.DBInstanceClass != nil {
+				ct = *m.instance.DBInstanceClass
+			}
+			if !sameInstanceClass(clusterTarget, ct) {
+				needsEqualization = true
+				break
 			}
 		}
 
 		// Try upgrading the cluster target to a newer instance generation
-		if r.preferNewGen && hasScalingRec {
+		if r.preferNewGen && needsEqualization {
 			// Use the engine and version from the first member (all members in a cluster share the same engine/version)
 			var clusterEngine *string
 			var clusterEngineVersion string
@@ -766,13 +760,14 @@ func (r *RDSRightSize) equalizeClusterRecommendations(
 				continue
 			}
 
-			// Determine direction by comparing cluster target to current instance
+			// Determine direction by comparing cluster target to current instance.
+			// Same capacity (e.g., generation upgrade) is classified as UpScale.
 			var recType types.RecommendationType
-			if clusterTargetProps.Vcpu > currentProps.Vcpu ||
-				(clusterTargetProps.Vcpu == currentProps.Vcpu && clusterTargetProps.Mem > currentProps.Mem) {
-				recType = types.UpScale
-			} else {
+			if clusterTargetProps.Vcpu < currentProps.Vcpu ||
+				(clusterTargetProps.Vcpu == currentProps.Vcpu && clusterTargetProps.Mem < currentProps.Mem) {
 				recType = types.DownScale
+			} else {
+				recType = types.UpScale
 			}
 
 			targetName := stripEnginePrefix(clusterTarget)
@@ -1014,10 +1009,10 @@ func writeApproximateCostDifference(recommendations []types.Recommendation) {
 		}
 	} else {
 		if cb.TotalMonthly > 0 {
-			fmt.Println(fmt.Sprintf("The changes will yield a price increase of approximately $%.2f/month ($%.2f/year)", cb.TotalMonthly, cb.TotalMonthly*12))
+			fmt.Printf("The changes will yield a price increase of approximately $%.2f/month ($%.2f/year)\n", cb.TotalMonthly, cb.TotalMonthly*12)
 		} else if cb.TotalMonthly < 0 {
 			savings := cb.TotalMonthly * -1
-			fmt.Println(fmt.Sprintf("The changes will yield a savings of approximately $%.2f/month ($%.2f/year)", savings, savings*12))
+			fmt.Printf("The changes will yield a savings of approximately $%.2f/month ($%.2f/year)\n", savings, savings*12)
 		}
 	}
 
@@ -1238,13 +1233,13 @@ func loadInstanceTypes(source *string) types.InstanceTypes {
 func loadInstanceTypesFromFile(path string) types.InstanceTypes {
 	body, err := os.ReadFile(path)
 	if err != nil {
-		log.Fatal(fmt.Sprintf("Failed to read instance types file %s: %v", path, err))
+		log.Fatalf("Failed to read instance types file %s: %v", path, err)
 	}
 
 	instanceTypes := types.InstanceTypes{}
 	jsonErr := json.Unmarshal(body, &instanceTypes)
 	if jsonErr != nil {
-		log.Fatal(fmt.Sprintf("Failed to parse instance types JSON from %s: %v", path, jsonErr))
+		log.Fatalf("Failed to parse instance types JSON from %s: %v", path, jsonErr)
 	}
 
 	return instanceTypes

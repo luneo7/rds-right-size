@@ -58,7 +58,7 @@ func ExportClusterPNG(recs []types.Recommendation, clusterID string, region stri
 	}
 
 	// Estimate total height: cluster header + all instances + separators
-	totalHeight := marginY * 2 // top/bottom
+	totalHeight := marginY * 2                                               // top/bottom
 	totalHeight += fontSizeTitle + 4 + 8 + fontSizeSubtitle + 4 + sectionGap // cluster header
 	for i, rec := range recs {
 		totalHeight += estimateInstanceHeight(&rec)

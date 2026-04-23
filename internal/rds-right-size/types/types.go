@@ -25,7 +25,7 @@ const (
 	MemoryUnderProvisionedReason RecommendationReason       = "Memory is under provisioned"
 	CPUUnderProvisionedReason    RecommendationReason       = "CPU is under provisioned"
 	CPUOverProvisionedReason     RecommendationReason       = "CPU is over provisioned"
-	ClusterEqualizationReason   RecommendationReason       = "Cluster equalization"
+	ClusterEqualizationReason    RecommendationReason       = "Cluster equalization"
 )
 
 type CPUUtilization struct {
@@ -82,17 +82,17 @@ func (p InstanceProperties) AvailableInRegion(region string) bool {
 
 type Recommendation struct {
 	rdsTypes.Instance
-	Region                      string                      `json:"Region,omitempty"`
-	Recommendation              RecommendationType
-	Reason                      RecommendationReason
-	RecommendedInstanceType     *string
-	MetricValue                 *float64
-	ProjectedCPU                 *float64                    `json:"ProjectedCPU,omitempty"`
-	MaxConnectionsAdjustRequired bool                        `json:"MaxConnectionsAdjustRequired,omitempty"`
-	PeakConnections              *float64                    `json:"PeakConnections,omitempty"`
-	ClusterEqualized             bool                        `json:"ClusterEqualized,omitempty"`
+	Region                       string `json:"Region,omitempty"`
+	Recommendation               RecommendationType
+	Reason                       RecommendationReason
+	RecommendedInstanceType      *string
+	MetricValue                  *float64
+	ProjectedCPU                 *float64 `json:"ProjectedCPU,omitempty"`
+	MaxConnectionsAdjustRequired bool     `json:"MaxConnectionsAdjustRequired,omitempty"`
+	PeakConnections              *float64 `json:"PeakConnections,omitempty"`
+	ClusterEqualized             bool     `json:"ClusterEqualized,omitempty"`
 	MonthlyApproximatePriceDiff  *float64
-	CurrentInstanceProperties   *InstanceProperties          `json:"-"`
-	TargetInstanceProperties    *InstanceProperties          `json:"-"`
-	TimeSeriesMetrics           *cwTypes.TimeSeriesMetrics   `json:"-"`
+	CurrentInstanceProperties    *InstanceProperties        `json:"-"`
+	TargetInstanceProperties     *InstanceProperties        `json:"-"`
+	TimeSeriesMetrics            *cwTypes.TimeSeriesMetrics `json:"-"`
 }

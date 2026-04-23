@@ -83,10 +83,10 @@ var (
 				Padding(0, 1)
 
 	selectedRowStyle = lipgloss.NewStyle().
-			Background(surfaceColor).
-			Foreground(textColor).
-			Bold(true).
-			Padding(0, 1)
+				Background(surfaceColor).
+				Foreground(textColor).
+				Bold(true).
+				Padding(0, 1)
 
 	normalRowStyle = lipgloss.NewStyle().
 			Foreground(dimTextColor).

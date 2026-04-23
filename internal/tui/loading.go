@@ -23,12 +23,12 @@ type AnalysisDoneMsg struct {
 }
 
 type LoadingModel struct {
-	spinner  spinner.Model
-	status   string
-	current  int
-	total    int
-	width    int
-	height   int
+	spinner spinner.Model
+	status  string
+	current int
+	total   int
+	width   int
+	height  int
 }
 
 func NewLoadingModel(width, height int) LoadingModel {

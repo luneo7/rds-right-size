@@ -17,17 +17,17 @@ import (
 
 // Layout constants
 const (
-	imgWidth     = 1200
-	marginX      = 50.0
-	marginY      = 40.0
-	sectionGap   = 28.0
-	lineHeight   = 30.0
-	cardPadding  = 22.0
-	cardGap      = 20.0
-	cardRadius   = 8.0
-	badgePadX    = 14.0
-	badgePadY    = 6.0
-	badgeRadius  = 5.0
+	imgWidth    = 1200
+	marginX     = 50.0
+	marginY     = 40.0
+	sectionGap  = 28.0
+	lineHeight  = 30.0
+	cardPadding = 22.0
+	cardGap     = 20.0
+	cardRadius  = 8.0
+	badgePadX   = 14.0
+	badgePadY   = 6.0
+	badgeRadius = 5.0
 )
 
 // Font sizes

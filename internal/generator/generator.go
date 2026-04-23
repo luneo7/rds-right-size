@@ -17,10 +17,10 @@ import (
 
 // GenerateOptions configures the instance types generation.
 type GenerateOptions struct {
-	Engine        string // "both", "aurora-mysql", or "aurora-postgresql"
-	Region        string // AWS home region for auth/SDK config
-	TargetRegions string // Comma-separated target regions, or "all" for all enabled regions
-	Output        string // Output file path
+	Engine        string              // "both", "aurora-mysql", or "aurora-postgresql"
+	Region        string              // AWS home region for auth/SDK config
+	TargetRegions string              // Comma-separated target regions, or "all" for all enabled regions
+	Output        string              // Output file path
 	OnStatus      func(status string) // Optional status callback for progress
 }
 

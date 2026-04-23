@@ -48,7 +48,7 @@ type Model struct {
 
 	// Analysis state
 	progressChan   chan ProgressMsg
-	statusChan     chan string         // receives generation status text from OnStatus callbacks
+	statusChan     chan string        // receives generation status text from OnStatus callbacks
 	cancelAnalysis context.CancelFunc // cancels the running analysis goroutine
 	region         string             // AWS region from config, used for pricing lookups and exports
 }
@@ -531,17 +531,17 @@ func (m Model) runAnalysis(ctx context.Context, values ConfigValues) tea.Cmd {
 
 		// Multi-region parallel analysis
 		allRecs, allWarnings, err := rds.AnalyzeMultiRegion(ctx, rds.MultiRegionOptions{
-			Regions:         regions,
-			Profile:         values.Profile,
+			Regions:          regions,
+			Profile:          values.Profile,
 			InstanceTypesURL: values.InstanceTypesURL,
-			Period:          values.Period,
-			Tags:            tags,
-			CPUDownsize:     values.CPUDownsize,
-			CPUUpsize:       values.CPUUpsize,
-			MemUpsize:       values.MemUpsize,
-			Stat:            cwTypes.StatName(values.Stat),
-			PreferNewGen:    values.PreferNewGen,
-			FetchTimeSeries: true,
+			Period:           values.Period,
+			Tags:             tags,
+			CPUDownsize:      values.CPUDownsize,
+			CPUUpsize:        values.CPUUpsize,
+			MemUpsize:        values.MemUpsize,
+			Stat:             cwTypes.StatName(values.Stat),
+			PreferNewGen:     values.PreferNewGen,
+			FetchTimeSeries:  true,
 			OnProgress: func(current, total int, instanceLabel string) {
 				progressChan <- ProgressMsg{
 					Current:    current,

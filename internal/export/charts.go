@@ -7,8 +7,8 @@ import (
 	"image/png"
 	"time"
 
-	chart "github.com/wcharczuk/go-chart/v2"
 	cwTypes "github.com/luneo7/rds-right-size/internal/cw/types"
+	chart "github.com/wcharczuk/go-chart/v2"
 )
 
 const (
